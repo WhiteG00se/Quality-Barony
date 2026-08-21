@@ -36,7 +36,7 @@ Integer rounding and a 3-EXP minimum are considered whenever EXP is gained.
 <summary><strong>Minimap Behavior</strong></summary>
 
 - <code>Quality marker states are pushed to Quality clients immediately. Unacknowledged updates retry every 0.3 seconds for up to 10 seconds.</code>
-- <code>When any player views an “Exit dungeon floor” dialog, every <img src="distributable/minimap/quality-item-uninteracted.svg" width="18" alt="Uninteracted item">, <img src="distributable/minimap/quality-interactable-uninteracted.svg" width="18" alt="Unused object or unbroken loot-bearing container">, <img src="distributable/minimap/quality-exit.svg" width="18" alt="Exit">, <img src="distributable/minimap/quality-workbench.svg" width="18" alt="Workbench">, and <img src="distributable/minimap/quality-cauldron.svg" width="18" alt="Cauldron"> is revealed for the entire team until the next floor.</code>
+- <code>When any player views an “Exit dungeon floor” dialog, every <img src="distributable/minimap/quality-item-uninteracted.svg" width="18" alt="Unused object, unbroken loot-bearing container, or uninteracted pickable item">, <img src="distributable/minimap/quality-exit.svg" width="18" alt="Exit">, <img src="distributable/minimap/quality-workbench.svg" width="18" alt="Workbench">, and <img src="distributable/minimap/quality-cauldron.svg" width="18" alt="Cauldron"> is revealed for the entire team until the next floor.</code>
 - <code>Quality markers clear when a floor loads or reloads.</code>
 
 </details>

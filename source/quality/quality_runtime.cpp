@@ -1,0 +1,718 @@
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+
+#include <algorithm>
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
+#include <unordered_set>
+#include <vector>
+
+#include "runtime_layout.hpp"
+#include "xp.hpp"
+
+namespace
+{
+	namespace layout = quality::runtime::layout;
+
+	constexpr std::size_t relayStride = 256;
+
+	struct Node
+	{
+		Node* next;
+		Node* previous;
+		void* list;
+		void* element;
+	};
+
+	struct MsvcString
+	{
+		union
+		{
+			char inlineData[16];
+			char* heapData;
+		} storage {};
+		std::uint64_t size = 0;
+		std::uint64_t capacity = 15;
+	};
+	static_assert(sizeof(MsvcString) == 32);
+
+	struct FollowerSnapshot
+	{
+		std::uint8_t* entity = nullptr;
+		std::uint8_t* stats = nullptr;
+		int owner = -1;
+	};
+
+	struct Patch
+	{
+		std::uintptr_t rva = 0;
+		std::vector<std::uint8_t> expected;
+		std::vector<std::uint8_t> replacement;
+		std::vector<std::uint8_t> original;
+		bool applied = false;
+	};
+
+	using AwardXpFn = void (*)(std::uint8_t*, std::uint8_t*, bool, bool);
+	using EntityMethodFn = void* (*)(std::uint8_t*);
+	using EntityBoolMethodFn = bool (*)(std::uint8_t*);
+	using EntityIntMethodFn = int (*)(std::uint8_t*);
+	using UidToEntityFn = std::uint8_t* (*)(std::uint32_t);
+	using StatGetAttributeFn = MsvcString* (*)(void*, MsvcString*, const MsvcString*);
+	using MsvcStringDestroyFn = void (*)(MsvcString*);
+	using SteamAchievementEntityFn = void (*)(std::uint8_t*, const char*);
+	using CompendiumEventUpdateFn = void (*)(int, int, int, int, bool, int);
+
+	std::uint8_t* base = nullptr;
+	AwardXpFn originalAwardXp = nullptr;
+	EntityMethodFn getStats = nullptr;
+	EntityBoolMethodFn monsterIsTinkeringCreation = nullptr;
+	EntityMethodFn monsterAllyGetPlayerLeader = nullptr;
+	EntityIntMethodFn entityInspiration = nullptr;
+	UidToEntityFn uidToEntity = nullptr;
+	StatGetAttributeFn statGetAttribute = nullptr;
+	MsvcStringDestroyFn msvcStringDestroy = nullptr;
+	SteamAchievementEntityFn steamAchievementEntity = nullptr;
+	CompendiumEventUpdateFn compendiumEventUpdate = nullptr;
+	void* relayPage = nullptr;
+	void* xpTrampoline = nullptr;
+
+	bool xpContextActive = false;
+	std::uint8_t* rootFollowerEntity = nullptr;
+	int partySize = 1;
+	std::array<quality::xp::OwnerBase, 4> ownerBases {};
+	std::vector<FollowerSnapshot> followers;
+	LONG initializationState = 0;
+
+	void debug(const char* message)
+	{
+		OutputDebugStringA("[QualityBarony] ");
+		OutputDebugStringA(message);
+		OutputDebugStringA("\n");
+	}
+
+	template <typename T>
+	T& field(std::uint8_t* object, const std::size_t offset)
+	{
+		return *reinterpret_cast<T*>(object + offset);
+	}
+
+	template <typename T>
+	const T& field(const std::uint8_t* object, const std::size_t offset)
+	{
+		return *reinterpret_cast<const T*>(object + offset);
+	}
+
+	std::int32_t& skill(std::uint8_t* entity, const std::size_t index)
+	{
+		return field<std::int32_t>(entity,
+			layout::entitySkill + index * sizeof(std::int32_t));
+	}
+
+	std::uintptr_t behavior(const std::uint8_t* entity)
+	{
+		return field<std::uintptr_t>(entity, layout::entityBehavior);
+	}
+
+	bool attributeNotEmpty(std::uint8_t* stats, const char* name)
+	{
+		if ( !stats || !statGetAttribute || !msvcStringDestroy )
+		{
+			return false;
+		}
+		MsvcString key {};
+		const std::size_t length = std::strlen(name);
+		if ( length >= sizeof(key.storage.inlineData) )
+		{
+			return false;
+		}
+		std::memcpy(key.storage.inlineData, name, length);
+		key.storage.inlineData[length] = '\0';
+		key.size = length;
+
+		MsvcString result {};
+		statGetAttribute(stats, &result, &key);
+		const bool found = result.size != 0;
+		msvcStringDestroy(&result);
+		return found;
+	}
+
+	bool followerEligible(std::uint8_t* entity, std::uint8_t* stats)
+	{
+		if ( !entity || !stats
+			|| field<std::int32_t>(stats, layout::statHp) <= 0
+			|| monsterIsTinkeringCreation(entity) )
+		{
+			return false;
+		}
+		const int type = field<std::int32_t>(stats, layout::statType);
+		switch ( type )
+		{
+			case layout::revenantSkull:
+			case layout::adorcisedWeapon:
+			case layout::flameElemental:
+			case layout::hologram:
+			case layout::duckSmall:
+				return false;
+			case layout::skeleton:
+				return !attributeNotEmpty(stats, "revenant_skeleton");
+			case layout::mothSmall:
+				return !attributeNotEmpty(stats, "fire_sprite");
+			case layout::earthElemental:
+				return !monsterAllyGetPlayerLeader(entity);
+			default:
+				return true;
+		}
+	}
+
+	std::uint8_t* playerEntity(const int player)
+	{
+		if ( player < 0 || player >= 4 )
+		{
+			return nullptr;
+		}
+		auto** players = reinterpret_cast<std::uint8_t**>(base + layout::playersRva);
+		return players[player]
+			? field<std::uint8_t*>(players[player], layout::playerEntity)
+			: nullptr;
+	}
+
+	int connectedPartySize()
+	{
+		const auto* disconnected = base + layout::clientDisconnectedRva;
+		int connected = 0;
+		for ( int player = 0; player < 4; ++player )
+		{
+			if ( !disconnected[player] )
+			{
+				++connected;
+			}
+		}
+		return quality::xp::clampPartySize(connected);
+	}
+
+	void snapshotFollowers(std::uint8_t* rootRecipient)
+	{
+		followers.clear();
+		rootFollowerEntity = nullptr;
+		ownerBases = {};
+		partySize = connectedPartySize();
+
+		auto** allStats = reinterpret_cast<std::uint8_t**>(base + layout::statsRva);
+		const auto* disconnected = base + layout::clientDisconnectedRva;
+		std::unordered_set<std::uintptr_t> recorded;
+		for ( int owner = 0; owner < 4; ++owner )
+		{
+			auto* ownerStats = allStats[owner];
+			if ( disconnected[owner] || !ownerStats )
+			{
+				continue;
+			}
+			auto* node = field<Node*>(ownerStats, layout::statFollowers);
+			while ( node )
+			{
+				const auto* uidPointer = static_cast<const std::uint32_t*>(node->element);
+				auto* follower = uidPointer ? uidToEntity(*uidPointer) : nullptr;
+				const auto key = reinterpret_cast<std::uintptr_t>(follower);
+				if ( follower && recorded.insert(key).second )
+				{
+					auto* stats = static_cast<std::uint8_t*>(getStats(follower));
+					if ( followerEligible(follower, stats) )
+					{
+						followers.push_back({ follower, stats, owner });
+						if ( follower == rootRecipient )
+						{
+							rootFollowerEntity = follower;
+						}
+					}
+				}
+				node = node->next;
+			}
+		}
+	}
+
+	void captureOwnerBase(std::uint8_t* recipient, const int unsharedGain)
+	{
+		if ( !xpContextActive || !recipient
+			|| behavior(recipient) != reinterpret_cast<std::uintptr_t>(
+				base + layout::actPlayerRva) )
+		{
+			return;
+		}
+		const int owner = skill(recipient, layout::skillPlayerIndex);
+		if ( owner >= 0 && owner < 4 )
+		{
+			ownerBases[static_cast<std::size_t>(owner)] = { true, unsharedGain };
+		}
+	}
+
+	void applyFollowerXp()
+	{
+		std::vector<quality::xp::Follower> routingInput;
+		routingInput.reserve(followers.size());
+		for ( const auto& follower : followers )
+		{
+			auto* currentStats = static_cast<std::uint8_t*>(getStats(follower.entity));
+			const bool eligible = currentStats == follower.stats
+				&& followerEligible(follower.entity, currentStats);
+			routingInput.push_back({ reinterpret_cast<std::uintptr_t>(follower.entity),
+				follower.owner, eligible,
+				eligible ? entityInspiration(follower.entity) : 0 });
+		}
+
+		const auto awards = quality::xp::routeFollowers(partySize, ownerBases,
+			routingInput);
+		for ( const auto& award : awards )
+		{
+			const auto found = std::find_if(followers.begin(), followers.end(),
+				[&](const FollowerSnapshot& follower) {
+					return reinterpret_cast<std::uintptr_t>(follower.entity) == award.key;
+				});
+			if ( found == followers.end() )
+			{
+				continue;
+			}
+			auto* stats = static_cast<std::uint8_t*>(getStats(found->entity));
+			if ( stats != found->stats || !followerEligible(found->entity, stats) )
+			{
+				continue;
+			}
+			auto& experience = field<std::int32_t>(stats, layout::statExperience);
+			if ( award.gain > award.baseGain )
+			{
+				if ( experience + award.gain >= 100
+					&& experience + award.baseGain < 100 )
+				{
+					if ( auto* owner = playerEntity(award.owner) )
+					{
+						steamAchievementEntity(owner, reinterpret_cast<const char*>(
+							base + layout::byExampleAchievementRva));
+					}
+				}
+				constexpr int inspirationXpEvent = 29;
+				constexpr int crownItemType = 0x134;
+				compendiumEventUpdate(award.owner, inspirationXpEvent,
+					crownItemType, award.gain - award.baseGain, false, -1);
+			}
+			experience += award.gain;
+		}
+	}
+
+	void awardXpHook(std::uint8_t* recipient, std::uint8_t* source,
+		const bool share, const bool root)
+	{
+		const bool outerRoot = root && !xpContextActive;
+		if ( outerRoot )
+		{
+			xpContextActive = true;
+			snapshotFollowers(recipient);
+		}
+
+		originalAwardXp(recipient, source, share, root);
+
+		if ( outerRoot )
+		{
+			applyFollowerXp();
+			followers.clear();
+			rootFollowerEntity = nullptr;
+			ownerBases = {};
+			xpContextActive = false;
+		}
+	}
+
+	std::vector<std::uint8_t> absoluteJump(const void* destination)
+	{
+		std::vector<std::uint8_t> bytes = { 0xFF, 0x25, 0, 0, 0, 0 };
+		const auto address = reinterpret_cast<std::uintptr_t>(destination);
+		const auto* raw = reinterpret_cast<const std::uint8_t*>(&address);
+		bytes.insert(bytes.end(), raw, raw + sizeof(address));
+		return bytes;
+	}
+
+	std::vector<std::uint8_t> relativeBranch(const std::uintptr_t fromRva,
+		const void* destination, const std::uint8_t opcode)
+	{
+		std::vector<std::uint8_t> bytes(5);
+		bytes[0] = opcode;
+		const auto from = reinterpret_cast<std::uintptr_t>(base + fromRva + 5);
+		const auto to = reinterpret_cast<std::uintptr_t>(destination);
+		const auto difference = static_cast<std::intptr_t>(to - from);
+		const auto displacement = static_cast<std::int32_t>(difference);
+		if ( static_cast<std::intptr_t>(displacement) != difference )
+		{
+			return {};
+		}
+		std::memcpy(bytes.data() + 1, &displacement, sizeof(displacement));
+		return bytes;
+	}
+
+	void appendImmediate(std::vector<std::uint8_t>& code, const void* address)
+	{
+		const auto value = reinterpret_cast<std::uintptr_t>(address);
+		const auto* raw = reinterpret_cast<const std::uint8_t*>(&value);
+		code.insert(code.end(), raw, raw + sizeof(value));
+	}
+
+	bool appendRelativeJump(std::vector<std::uint8_t>& code,
+		const std::uint8_t* stub, const void* destination)
+	{
+		const auto from = reinterpret_cast<std::uintptr_t>(stub + code.size() + 5);
+		const auto to = reinterpret_cast<std::uintptr_t>(destination);
+		const auto difference = static_cast<std::intptr_t>(to - from);
+		const auto displacement = static_cast<std::int32_t>(difference);
+		if ( static_cast<std::intptr_t>(displacement) != difference )
+		{
+			return false;
+		}
+		code.push_back(0xE9);
+		const auto* raw = reinterpret_cast<const std::uint8_t*>(&displacement);
+		code.insert(code.end(), raw, raw + sizeof(displacement));
+		return true;
+	}
+
+	std::vector<std::uint8_t> makeCaptureStub()
+	{
+		std::vector<std::uint8_t> code = {
+			0x9C,
+			0x50, 0x51, 0x52,
+			0x41, 0x50, 0x41, 0x51,
+			0x41, 0x52, 0x41, 0x53,
+			0x48, 0x81, 0xEC, 0x88, 0x00, 0x00, 0x00,
+			0xF3, 0x0F, 0x7F, 0x44, 0x24, 0x20,
+			0xF3, 0x0F, 0x7F, 0x4C, 0x24, 0x30,
+			0xF3, 0x0F, 0x7F, 0x54, 0x24, 0x40,
+			0xF3, 0x0F, 0x7F, 0x5C, 0x24, 0x50,
+			0xF3, 0x0F, 0x7F, 0x64, 0x24, 0x60,
+			0xF3, 0x0F, 0x7F, 0x6C, 0x24, 0x70,
+			0x49, 0x8B, 0xCE,
+			0x41, 0x8B, 0xD4,
+			0x48, 0xB8,
+		};
+		appendImmediate(code, reinterpret_cast<const void*>(&captureOwnerBase));
+		const std::initializer_list<std::uint8_t> tail = {
+			0xFF, 0xD0,
+			0xF3, 0x0F, 0x6F, 0x44, 0x24, 0x20,
+			0xF3, 0x0F, 0x6F, 0x4C, 0x24, 0x30,
+			0xF3, 0x0F, 0x6F, 0x54, 0x24, 0x40,
+			0xF3, 0x0F, 0x6F, 0x5C, 0x24, 0x50,
+			0xF3, 0x0F, 0x6F, 0x64, 0x24, 0x60,
+			0xF3, 0x0F, 0x6F, 0x6C, 0x24, 0x70,
+			0x48, 0x81, 0xC4, 0x88, 0x00, 0x00, 0x00,
+			0x41, 0x5B, 0x41, 0x5A,
+			0x41, 0x59, 0x41, 0x58,
+			0x5A, 0x59, 0x58, 0x9D,
+			0xBB, 0x9F, 0x86, 0x01, 0x00,
+			0xC3,
+		};
+		code.insert(code.end(), tail.begin(), tail.end());
+		return code;
+	}
+
+	std::vector<std::uint8_t> makeFollowerBlockStub(std::uint8_t* stub)
+	{
+		std::vector<std::uint8_t> code = { 0x48, 0xB9 };
+		appendImmediate(code, base + layout::actPlayerRva);
+		code.push_back(0x50);
+		code.insert(code.end(), { 0x48, 0xB8 });
+		appendImmediate(code, &xpContextActive);
+		code.insert(code.end(), { 0x80, 0x38, 0x00 });
+		const std::size_t activeJump = code.size();
+		code.insert(code.end(), { 0x75, 0x00 });
+		code.push_back(0x58);
+		code.insert(code.end(), { 0x49, 0x39, 0x8E, 0x50, 0x13, 0x00, 0x00 });
+		const std::size_t behaviorJump = code.size();
+		code.insert(code.end(), { 0x75, 0x00 });
+		if ( !appendRelativeJump(code, stub,
+			base + layout::xpFollowerBlockContinueRva) )
+		{
+			return {};
+		}
+		const std::size_t active = code.size();
+		code.push_back(0x58);
+		const std::size_t skip = code.size();
+		if ( !appendRelativeJump(code, stub,
+			base + layout::xpFollowerBlockSkipRva) )
+		{
+			return {};
+		}
+		code[activeJump + 1] = static_cast<std::uint8_t>(active - (activeJump + 2));
+		code[behaviorJump + 1] = static_cast<std::uint8_t>(skip - (behaviorJump + 2));
+		return code;
+	}
+
+	std::vector<std::uint8_t> makeMainBlockStub(std::uint8_t* stub)
+	{
+		std::vector<std::uint8_t> code = { 0x84, 0xDB };
+		const std::size_t excludedJump = code.size();
+		code.insert(code.end(), { 0x74, 0x00 });
+		code.push_back(0x50);
+		code.insert(code.end(), { 0x48, 0xB8 });
+		appendImmediate(code, &rootFollowerEntity);
+		code.insert(code.end(), { 0x4C, 0x3B, 0x30 });
+		code.push_back(0x58);
+		const std::size_t followerJump = code.size();
+		code.insert(code.end(), { 0x74, 0x00 });
+		if ( !appendRelativeJump(code, stub, base + layout::xpMainBlockContinueRva) )
+		{
+			return {};
+		}
+		const std::size_t skip = code.size();
+		if ( !appendRelativeJump(code, stub, base + layout::xpMainBlockSkipRva) )
+		{
+			return {};
+		}
+		code[excludedJump + 1] = static_cast<std::uint8_t>(skip - (excludedJump + 2));
+		code[followerJump + 1] = static_cast<std::uint8_t>(skip - (followerJump + 2));
+		return code;
+	}
+
+	void* allocateNearModule(const std::size_t bytes)
+	{
+		SYSTEM_INFO info {};
+		GetSystemInfo(&info);
+		const auto granularity = static_cast<std::uintptr_t>(info.dwAllocationGranularity);
+		const auto module = reinterpret_cast<std::uintptr_t>(base);
+		for ( std::uintptr_t distance = 0x02000000;
+			distance < 0x70000000; distance += granularity )
+		{
+			const auto candidate = reinterpret_cast<void*>(
+				(module + distance) & ~(granularity - 1));
+			if ( void* memory = VirtualAlloc(candidate, bytes,
+				MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE) )
+			{
+				return memory;
+			}
+		}
+		return nullptr;
+	}
+
+	void releaseAllocations()
+	{
+		if ( xpTrampoline )
+		{
+			VirtualFree(xpTrampoline, 0, MEM_RELEASE);
+			xpTrampoline = nullptr;
+			originalAwardXp = nullptr;
+		}
+		if ( relayPage )
+		{
+			VirtualFree(relayPage, 0, MEM_RELEASE);
+			relayPage = nullptr;
+		}
+	}
+
+	template <std::size_t Size>
+	bool matches(const std::uintptr_t rva,
+		const std::array<std::uint8_t, Size>& signature)
+	{
+		return std::memcmp(base + rva, signature.data(), signature.size()) == 0;
+	}
+
+	bool validateLayout()
+	{
+		return matches(layout::awardXpRva, layout::awardXpEntrySignature)
+			&& matches(layout::awardXpHookRva, layout::awardXpHookSignature)
+			&& matches(layout::getStatsRva, layout::getStatsSignature)
+			&& matches(layout::uidToEntityRva, layout::uidToEntitySignature)
+			&& matches(layout::entityInspirationRva, layout::entityInspirationSignature)
+			&& matches(layout::monsterIsTinkeringCreationRva,
+				layout::monsterIsTinkeringCreationSignature)
+			&& matches(layout::monsterAllyGetPlayerLeaderRva,
+				layout::monsterAllyGetPlayerLeaderSignature)
+			&& matches(layout::statGetAttributeRva, layout::statGetAttributeSignature)
+			&& matches(layout::msvcStringDestroyRva, layout::msvcStringDestroySignature)
+			&& matches(layout::steamAchievementEntityRva,
+				layout::steamAchievementEntitySignature)
+			&& matches(layout::compendiumEventUpdateRva,
+				layout::compendiumEventUpdateSignature)
+			&& matches(layout::xpCaptureRva, layout::xpCaptureSignature)
+			&& matches(layout::xpFollowerBlockRva, layout::xpFollowerBlockSignature)
+			&& matches(layout::xpMainBlockRva, layout::xpMainBlockSignature);
+	}
+
+	bool writePatch(Patch& patch)
+	{
+		auto* address = base + patch.rva;
+		DWORD oldProtection = 0;
+		if ( !VirtualProtect(address, patch.replacement.size(),
+			PAGE_EXECUTE_READWRITE, &oldProtection) )
+		{
+			return false;
+		}
+		std::memcpy(address, patch.replacement.data(), patch.replacement.size());
+		FlushInstructionCache(GetCurrentProcess(), address, patch.replacement.size());
+		DWORD ignored = 0;
+		VirtualProtect(address, patch.replacement.size(), oldProtection, &ignored);
+		patch.applied = true;
+		return std::memcmp(address, patch.replacement.data(),
+			patch.replacement.size()) == 0;
+	}
+
+	void rollback(std::vector<Patch>& patches)
+	{
+		for ( auto patch = patches.rbegin(); patch != patches.rend(); ++patch )
+		{
+			if ( !patch->applied )
+			{
+				continue;
+			}
+			auto* address = base + patch->rva;
+			DWORD oldProtection = 0;
+			if ( VirtualProtect(address, patch->original.size(),
+				PAGE_EXECUTE_READWRITE, &oldProtection) )
+			{
+				std::memcpy(address, patch->original.data(), patch->original.size());
+				FlushInstructionCache(GetCurrentProcess(), address, patch->original.size());
+				DWORD ignored = 0;
+				VirtualProtect(address, patch->original.size(), oldProtection, &ignored);
+			}
+		}
+	}
+
+	bool installRuntime()
+	{
+		base = reinterpret_cast<std::uint8_t*>(GetModuleHandleW(nullptr));
+		if ( !base || !validateLayout() )
+		{
+			debug("Barony v5.0.2 EXP layout mismatch");
+			return false;
+		}
+
+		getStats = reinterpret_cast<EntityMethodFn>(base + layout::getStatsRva);
+		uidToEntity = reinterpret_cast<UidToEntityFn>(base + layout::uidToEntityRva);
+		entityInspiration = reinterpret_cast<EntityIntMethodFn>(
+			base + layout::entityInspirationRva);
+		monsterIsTinkeringCreation = reinterpret_cast<EntityBoolMethodFn>(
+			base + layout::monsterIsTinkeringCreationRva);
+		monsterAllyGetPlayerLeader = reinterpret_cast<EntityMethodFn>(
+			base + layout::monsterAllyGetPlayerLeaderRva);
+		statGetAttribute = reinterpret_cast<StatGetAttributeFn>(
+			base + layout::statGetAttributeRva);
+		msvcStringDestroy = reinterpret_cast<MsvcStringDestroyFn>(
+			base + layout::msvcStringDestroyRva);
+		steamAchievementEntity = reinterpret_cast<SteamAchievementEntityFn>(
+			base + layout::steamAchievementEntityRva);
+		compendiumEventUpdate = reinterpret_cast<CompendiumEventUpdateFn>(
+			base + layout::compendiumEventUpdateRva);
+
+		relayPage = allocateNearModule(3 * relayStride);
+		xpTrampoline = VirtualAlloc(nullptr, 64, MEM_COMMIT | MEM_RESERVE,
+			PAGE_EXECUTE_READWRITE);
+		if ( !relayPage || !xpTrampoline )
+		{
+			debug("EXP hook allocation failed");
+			releaseAllocations();
+			return false;
+		}
+
+		auto* relay = static_cast<std::uint8_t*>(relayPage);
+		auto* captureRelay = relay;
+		auto* followerRelay = relay + relayStride;
+		auto* mainRelay = relay + 2 * relayStride;
+		const auto captureStub = makeCaptureStub();
+		const auto followerStub = makeFollowerBlockStub(followerRelay);
+		const auto mainStub = makeMainBlockStub(mainRelay);
+		if ( captureStub.empty() || followerStub.empty() || mainStub.empty()
+			|| captureStub.size() > relayStride
+			|| followerStub.size() > relayStride
+			|| mainStub.size() > relayStride )
+		{
+			debug("EXP relay construction failed");
+			releaseAllocations();
+			return false;
+		}
+		std::memcpy(captureRelay, captureStub.data(), captureStub.size());
+		std::memcpy(followerRelay, followerStub.data(), followerStub.size());
+		std::memcpy(mainRelay, mainStub.data(), mainStub.size());
+
+		auto* trampoline = static_cast<std::uint8_t*>(xpTrampoline);
+		std::memcpy(trampoline, base + layout::awardXpHookRva,
+			layout::awardXpHookSignature.size());
+		const auto jumpBack = absoluteJump(base + layout::awardXpHookRva
+			+ layout::awardXpHookSignature.size());
+		std::memcpy(trampoline + layout::awardXpHookSignature.size(),
+			jumpBack.data(), jumpBack.size());
+		originalAwardXp = reinterpret_cast<AwardXpFn>(trampoline);
+
+		std::vector<Patch> patches;
+		const auto addPatch = [&](const std::uintptr_t rva, const auto& expected,
+			std::vector<std::uint8_t> replacement) {
+			Patch patch;
+			patch.rva = rva;
+			patch.expected.assign(expected.begin(), expected.end());
+			patch.replacement = std::move(replacement);
+			patch.original.assign(base + rva,
+				base + rva + patch.replacement.size());
+			patches.push_back(std::move(patch));
+		};
+
+		addPatch(layout::awardXpHookRva, layout::awardXpHookSignature,
+			absoluteJump(reinterpret_cast<void*>(&awardXpHook)));
+		addPatch(layout::xpCaptureRva, layout::xpCaptureSignature,
+			relativeBranch(layout::xpCaptureRva, captureRelay, 0xE8));
+		auto followerJump = relativeBranch(layout::xpFollowerBlockRva,
+			followerRelay, 0xE9);
+		if ( followerJump.empty() )
+		{
+			debug("Follower EXP relay is outside relative-branch range");
+			releaseAllocations();
+			return false;
+		}
+		followerJump.resize(layout::xpFollowerBlockSignature.size(), 0x90);
+		addPatch(layout::xpFollowerBlockRva,
+			layout::xpFollowerBlockSignature, std::move(followerJump));
+		auto mainJump = relativeBranch(layout::xpMainBlockRva, mainRelay, 0xE9);
+		if ( mainJump.empty() )
+		{
+			debug("Main-recipient EXP relay is outside relative-branch range");
+			releaseAllocations();
+			return false;
+		}
+		mainJump.resize(layout::xpMainBlockSignature.size(), 0x90);
+		addPatch(layout::xpMainBlockRva,
+			layout::xpMainBlockSignature, std::move(mainJump));
+
+		for ( const auto& patch : patches )
+		{
+			if ( patch.replacement.empty()
+				|| patch.replacement.size() > patch.expected.size()
+				|| std::memcmp(base + patch.rva, patch.expected.data(),
+					patch.expected.size()) != 0 )
+			{
+				debug("EXP patch transaction preflight failed");
+				releaseAllocations();
+				return false;
+			}
+		}
+		for ( auto& patch : patches )
+		{
+			if ( !writePatch(patch) )
+			{
+				rollback(patches);
+				releaseAllocations();
+				debug("EXP patch transaction rolled back");
+				return false;
+			}
+		}
+
+		debug("Quality EXP runtime installed for Barony v5.0.2");
+		return true;
+	}
+}
+
+extern "C" __declspec(dllexport) DWORD WINAPI QualityBaronyInitialize(void*)
+{
+	const LONG previous = InterlockedCompareExchange(&initializationState, 1, 0);
+	if ( previous == 2 )
+	{
+		return 1;
+	}
+	if ( previous != 0 )
+	{
+		return 0;
+	}
+	const bool installed = installRuntime();
+	InterlockedExchange(&initializationState, installed ? 2 : 0);
+	return installed ? 1 : 0;
+}

@@ -28,7 +28,7 @@
 | Player (any follower last hits) | Global | 100% | 90% | 80% | 70% |
 | Player (other player last hits) | Global | — | 90% | 80% | 70% |
 
-Integer rounding and a 3-EXP minimum are considered whenever EXP is gained.
+Player shares have a 3-EXP minimum. Follower gains use integer rounding without a minimum.
 
 </details>
 

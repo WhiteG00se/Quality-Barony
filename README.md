@@ -1,17 +1,20 @@
-## important info
-
 - Compatible with Steam save game cloud sync, but don't use on runs that you started in vanilla Barony
 - No need to copy/move any files; just start `distributable\Launch Quality Barony.bat`.
 
-## install options
+<details>
+<summary><strong>Install Options</strong></summary>
 
 1) Download this repository as a ZIP and extract it anywhere (not in the game's folder)
 2) Or just clone this repository. [GitHub Desktop](https://desktop.github.com) works without an account
 
+</details>
+
 ## Features
 
-- ~~Vanilla~~ | unchanged | `Quality`
-- Integer rounding and a 3-EXP minimum are considered whenever EXP is gained.
+~~Vanilla~~ | unchanged | `Quality`
+
+<details>
+<summary><strong>EXP Multipliers</strong></summary>
 
 | EXP Receiver | Range | Solo | 2 players | 3 players | 4 players |
 |---|---:|---:|---:|---:|---:|
@@ -25,13 +28,18 @@
 | Player (any follower last hits) | Global | 100% | 90% | 80% | 70% |
 | Player (other player last hits) | Global | — | 90% | 80% | 70% |
 
+Integer rounding and a 3-EXP minimum are considered whenever EXP is gained.
 
+</details>
 
-### Minimap Behavior
+<details>
+<summary><strong>Minimap Behavior</strong></summary>
 
-- Quality marker states are pushed to Quality clients immediately. Unacknowledged updates retry every 0.3 seconds for up to 10 seconds.
-- When any player views an “Exit dungeon floor” dialog, every <img src="distributable/minimap/quality-item-uninteracted.svg" width="18" alt="Uninteracted item">, <img src="distributable/minimap/quality-interactable-uninteracted.svg" width="18" alt="Unused object or unbroken loot-bearing container">, <img src="distributable/minimap/quality-exit.svg" width="18" alt="Exit">, <img src="distributable/minimap/quality-workbench.svg" width="18" alt="Workbench">, and <img src="distributable/minimap/quality-cauldron.svg" width="18" alt="Cauldron"> is revealed for the entire team until the next floor.
-- Quality markers clear when a floor loads or reloads.
+- <code>Quality marker states are pushed to Quality clients immediately. Unacknowledged updates retry every 0.3 seconds for up to 10 seconds.</code>
+- <code>When any player views an “Exit dungeon floor” dialog, every <img src="distributable/minimap/quality-item-uninteracted.svg" width="18" alt="Uninteracted item">, <img src="distributable/minimap/quality-interactable-uninteracted.svg" width="18" alt="Unused object or unbroken loot-bearing container">, <img src="distributable/minimap/quality-exit.svg" width="18" alt="Exit">, <img src="distributable/minimap/quality-workbench.svg" width="18" alt="Workbench">, and <img src="distributable/minimap/quality-cauldron.svg" width="18" alt="Cauldron"> is revealed for the entire team until the next floor.</code>
+- <code>Quality markers clear when a floor loads or reloads.</code>
+
+</details>
 
 <details>
 <summary><strong>Minimap Legend</strong></summary>
@@ -71,16 +79,3 @@
 </table>
 
 </details>
-
-
-## Notes just for developers
-
-- Mod was created for Barony v5.0.2. (`barony.exe` SHA-256 is `8566DA37BC39EA5A1ED08A8AD57608AF4F019FB415869258FB3C1D310B4419E4`)
-
-### Repository layout
-
-- `distributable/` contains every file required to run Quality Barony. Completed executables, DLLs, and runtime assets are written directly here and are not duplicated elsewhere.
-- `source/quality/` contains Quality Barony source code, while `source/tests/` contains its tests.
-- `scripts/` contains project automation.
-- `.local/` is an ignored workspace for third-party tools, dependencies, and temporary working files. It never contains completed distributable files.
-- `Barony-Repo/` is the human-maintained, read-only reference repository for the Barony source code.

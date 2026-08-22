@@ -496,7 +496,7 @@ namespace
 	{
 		std::array<std::uint8_t, packetSize> bytes {};
 		bytes[0] = 'Q'; bytes[1] = 'M'; bytes[2] = 'R'; bytes[3] = 'F';
-		bytes[4] = 3;
+		bytes[4] = 4;
 		bytes[5] = static_cast<std::uint8_t>(kind);
 		bytes[6] = *reinterpret_cast<std::uint8_t*>(base + secretLevelRva) ? 1 : 0;
 		writeU32(bytes.data(), 8, sequence);
@@ -624,34 +624,6 @@ namespace
 		}
 	}
 
-	void broadcastRefresh()
-	{
-		if ( multiplayerMode() != 1 )
-		{
-			return;
-		}
-		auto* clients = *reinterpret_cast<IpAddress**>(base + netClientsPointerRva);
-		const auto* disconnected = base + clientDisconnectedRva;
-		if ( !clients )
-		{
-			return;
-		}
-		for ( int player = 1; player < 4; ++player )
-		{
-			if ( disconnected[player] )
-			{
-				continue;
-			}
-			const IpAddress destination = clients[player - 1];
-			const auto generation = clientGenerations.find(addressKey(destination));
-			if ( generation != clientGenerations.end() )
-			{
-				queueReliable(PacketKind::Refresh, destination, generation->second,
-					exitCountsPayload(player));
-			}
-		}
-	}
-
 	ItemPacketPayload itemPayload(const quality::minimap::items::Marker& marker)
 	{
 		return {marker.markerId, marker.entityUid, marker.inventoryKey,
@@ -684,17 +656,13 @@ namespace
 		}
 	}
 
-	void requestTeamRefresh()
+	void requestLocalRefresh()
 	{
 		refreshRevealSnapshot();
 		if ( multiplayerMode() == 2 )
 		{
 			queueReliable(PacketKind::Request,
 				*reinterpret_cast<IpAddress*>(base + netServerRva), localGeneration);
-		}
-		else if ( multiplayerMode() == 1 )
-		{
-			broadcastRefresh();
 		}
 	}
 
@@ -727,7 +695,7 @@ namespace
 	{
 		return packet && packet->data && packet->len == static_cast<int>(packetSize)
 			&& std::memcmp(packet->data, "QMRF", 4) == 0
-			&& packet->data[4] == 3
+			&& packet->data[4] == 4
 			&& packet->data[5] >= static_cast<std::uint8_t>(PacketKind::Ready)
 			&& packet->data[5] <= static_cast<std::uint8_t>(PacketKind::ChestState);
 	}
@@ -763,15 +731,19 @@ namespace
 			&& (kind == PacketKind::Ready || kind == PacketKind::Request) )
 		{
 			auto* clients = *reinterpret_cast<IpAddress**>(base + netClientsPointerRva);
-			bool connected = false;
+			int requestingPlayer = -1;
 			if ( clients )
 			{
 				for ( int index = 0; index < 3; ++index )
 				{
-					connected = connected || sameAddress(clients[index], packet->address);
+					if ( sameAddress(clients[index], packet->address) )
+					{
+						requestingPlayer = index + 1;
+						break;
+					}
 				}
 			}
-			if ( !connected )
+			if ( requestingPlayer < 0 )
 			{
 				return;
 			}
@@ -780,20 +752,6 @@ namespace
 			{
 				// The same address can belong to a new session whose counter restarted.
 				accepted = generation;
-				if ( revealState.active() )
-				{
-					int player = 1;
-					for ( int index = 0; index < 3; ++index )
-					{
-						if ( sameAddress(clients[index], packet->address) )
-						{
-							player = index + 1;
-							break;
-						}
-					}
-					queueReliable(PacketKind::Refresh, packet->address, accepted,
-						exitCountsPayload(player));
-				}
 				for ( const auto& marker : partyItemState.markers() )
 				{
 					queueReliable(PacketKind::ItemDropped, packet->address,
@@ -808,8 +766,8 @@ namespace
 			else if ( quality::minimap::reveal::acceptHostRequest(true, true,
 				generation, accepted) )
 			{
-				refreshRevealSnapshot();
-				broadcastRefresh();
+				queueReliable(PacketKind::Refresh, packet->address, accepted,
+					exitCountsPayload(requestingPlayer));
 			}
 		}
 		else if ( multiplayerMode() == 2
@@ -1197,7 +1155,7 @@ namespace
 		if ( revealState.tooltipEdge(
 			*reinterpret_cast<std::uint32_t*>(base + ticksRva)) )
 		{
-			requestTeamRefresh();
+			requestLocalRefresh();
 		}
 		const auto counts = exitCreatureCounts(worldUi);
 		quality::minimap::formatExitTooltip(exitTooltipText.data(),

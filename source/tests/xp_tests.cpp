@@ -143,6 +143,15 @@ namespace
 		static_assert(!eligibleGroundGold(1, 42));
 	}
 
+	void testRevealedGroundItemEligibility()
+	{
+		using namespace quality::minimap::reveal;
+		static_assert(roughRockItemType == 125);
+		static_assert(!eligibleRevealedGroundItem(roughRockItemType, true));
+		static_assert(eligibleRevealedGroundItem(roughRockItemType, false));
+		static_assert(eligibleRevealedGroundItem(roughRockItemType + 1, true));
+	}
+
 	void testExitCreatureCountsAndText()
 	{
 		using quality::minimap::ExitCreatureDisposition;
@@ -491,6 +500,7 @@ int main()
 	testEligibilityDeduplicationAndLastHit();
 	testRevealEligibility();
 	testGroundGoldEligibility();
+	testRevealedGroundItemEligibility();
 	testExitCreatureCountsAndText();
 	testPersistentRevealLifecycle();
 	testGroundGoldLiveLifecycle();

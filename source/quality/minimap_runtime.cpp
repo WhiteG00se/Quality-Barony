@@ -104,6 +104,8 @@ namespace
 	constexpr std::size_t skillShowOnMap = 59;
 	constexpr std::size_t skillItemOriginalOwner = 21;
 	constexpr std::size_t skillItemContainer = 29;
+	constexpr std::size_t skillItemType = 10;
+	constexpr std::size_t skillItemIdentified = 15;
 	constexpr std::size_t worldUiPlayer = 0;
 	constexpr std::size_t playerNumber = 0x10;
 	constexpr std::size_t skillColliderMaxHp = 9;
@@ -940,6 +942,8 @@ namespace
 				&& skill(entity, skillItemContainer) == 0 )
 			{
 				candidate.kind = CandidateKind::Item;
+				candidate.available = quality::minimap::reveal::eligibleRevealedGroundItem(
+					skill(entity, skillItemType), skill(entity, skillItemIdentified) != 0);
 				const auto originalOwner = static_cast<std::uint32_t>(
 					skill(entity, skillItemOriginalOwner));
 				const auto parent = field<std::uint32_t>(entity, entityParent);

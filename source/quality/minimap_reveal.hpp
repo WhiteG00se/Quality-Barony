@@ -79,6 +79,14 @@ namespace quality::minimap::reveal
 		return amount > 0 && containerUid == 0;
 	}
 
+	constexpr int roughRockItemType = 125;
+
+	constexpr bool eligibleRevealedGroundItem(const int itemType,
+		const bool identified)
+	{
+		return itemType != roughRockItemType || !identified;
+	}
+
 	constexpr bool eligible(const Candidate& candidate, const bool used)
 	{
 		if ( candidate.uid == 0 || !candidate.available )

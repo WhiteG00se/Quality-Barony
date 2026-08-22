@@ -32,6 +32,7 @@ namespace quality::minimap
 	constexpr std::uint32_t boulderCyan = color(0, 255, 255);
 	constexpr std::uint32_t stationBlue = color(140, 220, 255);
 	constexpr std::uint32_t uninteractedGreen = color(0x55, 0x6B, 0x2F);
+	constexpr std::uint32_t interactedBlue = color(0x41, 0x69, 0xE1);
 	constexpr double followerGhostScale = 0.7;
 
 	constexpr std::uint32_t ownerColor(const int owner, const int viewer,

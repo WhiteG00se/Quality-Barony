@@ -70,6 +70,11 @@ Write-Host 'Checking unsupported in-memory exit-reveal signature rejection...'
     '--test-reveal-signature-rejection'
 if ($LASTEXITCODE -ne 0) { throw 'The runtime accepted an unsupported exit-reveal signature.' }
 
+Write-Host 'Checking unsupported in-memory party-item marker signature rejection...'
+& $Launcher '--game-dir' $GameDir '--runtime-dll' $Runtime `
+    '--test-item-marker-signature-rejection'
+if ($LASTEXITCODE -ne 0) { throw 'The runtime accepted an unsupported party-item marker signature.' }
+
 $AfterHash = (Get-FileHash -LiteralPath $GameExe -Algorithm SHA256).Hash
 if ($AfterHash -ne $BeforeHash) {
     throw 'The installed barony.exe changed during runtime testing.'

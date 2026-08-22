@@ -41,6 +41,7 @@ namespace quality::minimap::reveal
 		Sink,
 		BreakableContainer,
 		Item,
+		Gold,
 		Exit,
 		Workbench,
 		Cauldron,
@@ -72,6 +73,12 @@ namespace quality::minimap::reveal
 			|| kind == CandidateKind::Fountain || kind == CandidateKind::Sink;
 	}
 
+	constexpr bool eligibleGroundGold(const int amount,
+		const std::uint32_t containerUid)
+	{
+		return amount > 0 && containerUid == 0;
+	}
+
 	constexpr bool eligible(const Candidate& candidate, const bool used)
 	{
 		if ( candidate.uid == 0 || !candidate.available )
@@ -89,6 +96,8 @@ namespace quality::minimap::reveal
 				return candidate.hasLoot;
 			case CandidateKind::Item:
 				return !candidate.playerOwned && !candidate.lootBag;
+			case CandidateKind::Gold:
+				return true;
 			case CandidateKind::Exit:
 			case CandidateKind::Workbench:
 			case CandidateKind::Cauldron:

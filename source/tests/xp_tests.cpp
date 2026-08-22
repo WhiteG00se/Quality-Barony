@@ -7,6 +7,7 @@
 
 #include "../quality/xp.hpp"
 #include "../quality/minimap.hpp"
+#include "../quality/minimap_items.hpp"
 #include "../quality/minimap_reveal.hpp"
 
 namespace
@@ -116,9 +117,29 @@ namespace
 		candidate.playerOwned = false;
 		candidate.lootBag = true;
 		assert(!eligible(candidate, false));
+		candidate.kind = CandidateKind::Gold;
+		candidate.lootBag = false;
+		candidate.playerOwned = true;
+		assert(eligible(candidate, false));
+		candidate.available = false;
+		assert(!eligible(candidate, false));
 		candidate.kind = CandidateKind::None;
+		candidate.available = true;
+		candidate.playerOwned = false;
 		candidate.lootBag = false;
 		assert(!eligible(candidate, false));
+	}
+
+	void testGroundGoldEligibility()
+	{
+		using quality::minimap::reveal::eligibleGroundGold;
+		static_assert(eligibleGroundGold(1, 0));
+		static_assert(eligibleGroundGold(4, 0));
+		static_assert(eligibleGroundGold(5, 0));
+		static_assert(eligibleGroundGold(1000, 0));
+		static_assert(!eligibleGroundGold(0, 0));
+		static_assert(!eligibleGroundGold(-1, 0));
+		static_assert(!eligibleGroundGold(1, 42));
 	}
 
 	void testRefreshableSnapshot()
@@ -161,6 +182,26 @@ namespace
 		assert(state.markers().empty());
 	}
 
+	void testGroundGoldSnapshotLifecycle()
+	{
+		using namespace quality::minimap::reveal;
+		State state;
+		state.refresh({{50, 8, 9, CandidateKind::Gold}});
+		assert(state.contains(50));
+		state.observeLive({
+			{50, 10, 11, CandidateKind::Gold},
+			{60, 12, 13, CandidateKind::Gold},
+		});
+		assert(state.contains(50));
+		assert(!state.contains(60));
+		const auto markers = state.markers();
+		assert(markers.size() == 1);
+		assert(markers[0].uid == 50 && markers[0].x == 10
+			&& markers[0].y == 11);
+		state.observeLive({});
+		assert(!state.contains(50));
+	}
+
 	void testTooltipDebounce()
 	{
 		quality::minimap::reveal::State state;
@@ -185,6 +226,73 @@ namespace
 		assert(!acceptClientRefresh(true, false, 8, 8));
 		assert(!acceptClientRefresh(true, true, 7, 8));
 	}
+
+	void testPartyItemPickupDropIdentity()
+	{
+		using quality::minimap::items::State;
+		State state;
+		state.reset();
+		constexpr std::uint32_t key = 0x12345678U;
+		assert(state.observe(200, key, 8, 9, false) == 200);
+		assert(state.markers().empty());
+		assert(state.pickUp(200, key) == 200);
+		assert(state.observe(201, key, 12, 13, true) == 200);
+		auto markers = state.markers();
+		assert(markers.size() == 1);
+		assert(markers[0].markerId == 200 && markers[0].entityUid == 201);
+		assert(markers[0].x == 12 && markers[0].y == 13);
+		state.observe(201, key, 14, 15, false);
+		markers = state.markers();
+		assert(markers[0].x == 14 && markers[0].y == 15);
+		state.remove(201);
+		assert(state.markers().empty());
+	}
+
+	void testPartyItemStartingDropQueuesAndReset()
+	{
+		using quality::minimap::items::State;
+		State state;
+		constexpr std::uint32_t key = 99;
+		assert(state.observe(500, key, 1, 1, true) == 500);
+		assert(state.isPartyDropped(500));
+		state.reset();
+		assert(state.markers().empty());
+
+		state.observe(10, key, 1, 1, false);
+		state.observe(11, key, 2, 2, false);
+		assert(state.pickUp(10, key) == 10);
+		assert(state.pickUp(11, key) == 11);
+		assert(state.observe(20, key, 3, 3, true) == 10);
+		assert(state.observe(21, key, 4, 4, true) == 11);
+	}
+
+	void testPartyItemFingerprintAndRemoteDrop()
+	{
+		using quality::minimap::items::stackFingerprint;
+		constexpr std::array<std::uint32_t, 5> fields = {1, 2, 3, 4, 5};
+		static_assert(stackFingerprint(fields) != 0);
+		static_assert(stackFingerprint(fields)
+			== stackFingerprint({1, 2, 3, 4, 5}));
+		quality::minimap::items::State state;
+		state.applyDrop(0x80000001U, 700, 77, 20, 21);
+		const auto markers = state.markers();
+		assert(markers.size() == 1 && markers[0].markerId == 0x80000001U);
+		assert(state.pickUp(700, 77) == 0x80000001U);
+		assert(state.markers().empty());
+	}
+
+	void testPartyItemEligibilityAndAuthority()
+	{
+		using quality::minimap::items::eligibleGroundItem;
+		using quality::minimap::items::locallyAuthoritative;
+		static_assert(eligibleGroundItem(true, false, false));
+		static_assert(!eligibleGroundItem(false, false, false));
+		static_assert(!eligibleGroundItem(true, true, false));
+		static_assert(!eligibleGroundItem(true, false, true));
+		static_assert(locallyAuthoritative(0));
+		static_assert(locallyAuthoritative(1));
+		static_assert(!locallyAuthoritative(2));
+	}
 }
 
 int main()
@@ -196,6 +304,7 @@ int main()
 	static_assert(quality::minimap::minotaurRed == 0xFF0000FFU);
 	static_assert(quality::minimap::shadowGray == 0xFFBFBFBFU);
 	static_assert(quality::minimap::uninteractedGreen == 0xFF2F6B55U);
+	static_assert(quality::minimap::interactedBlue == 0xFFE16941U);
 	static_assert(quality::minimap::followerGhostScale == 0.7);
 	static_assert(quality::minimap::ownerColor(2, 2)
 		== quality::minimap::white);
@@ -239,9 +348,15 @@ int main()
 	testOwnerSpecificRouting();
 	testEligibilityDeduplicationAndLastHit();
 	testRevealEligibility();
+	testGroundGoldEligibility();
 	testRefreshableSnapshot();
+	testGroundGoldSnapshotLifecycle();
 	testTooltipDebounce();
 	testRevealSynchronizationGates();
+	testPartyItemPickupDropIdentity();
+	testPartyItemStartingDropQueuesAndReset();
+	testPartyItemFingerprintAndRemoteDrop();
+	testPartyItemEligibilityAndAuthority();
 	std::cout << "Quality runtime unit tests passed\n";
 	return 0;
 }

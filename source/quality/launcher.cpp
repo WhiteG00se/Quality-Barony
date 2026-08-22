@@ -26,6 +26,7 @@ namespace
 	constexpr std::uintptr_t xpCaptureRva = 0x00457E45;
 	constexpr std::uintptr_t drawMinimapRva = 0x00708070;
 	constexpr std::uintptr_t exitTooltipRva = 0x005F451B;
+	constexpr std::uintptr_t terrainImageDrawCallRva = 0x00708EAF;
 
 	struct FoundProcess
 	{
@@ -591,7 +592,8 @@ namespace
 		std::wcout << L"Quality Barony Launcher for Barony v5.0.2 x64\n\n"
 			L"Usage: QualityBaronyLauncher.exe [--game-dir PATH] "
 			L"[--verify-only|--test-injection|--test-signature-rejection|"
-			L"--test-minimap-signature-rejection|--test-reveal-signature-rejection] "
+			L"--test-minimap-signature-rejection|--test-reveal-signature-rejection|"
+			L"--test-item-marker-signature-rejection] "
 			L"[Barony arguments...]\n"
 			L"Normal startup asks Steam to launch Barony so Steam Cloud tracks the session.\n"
 			L"Set BARONY_GAME_DIR if Steam auto-detection does not find the game.\n";
@@ -607,6 +609,7 @@ int wmain(int argc, wchar_t** argv)
 	bool signatureRejectionTest = false;
 	bool minimapSignatureRejectionTest = false;
 	bool revealSignatureRejectionTest = false;
+	bool itemMarkerSignatureRejectionTest = false;
 	std::vector<std::wstring> gameArguments;
 	for ( int index = 1; index < argc; ++index )
 	{
@@ -653,6 +656,10 @@ int wmain(int argc, wchar_t** argv)
 		else if ( argument == L"--test-reveal-signature-rejection" )
 		{
 			revealSignatureRejectionTest = true;
+		}
+		else if ( argument == L"--test-item-marker-signature-rejection" )
+		{
+			itemMarkerSignatureRejectionTest = true;
 		}
 		else if ( argument == L"--" )
 		{
@@ -707,7 +714,7 @@ int wmain(int argc, wchar_t** argv)
 	}
 
 	if ( injectionTest || signatureRejectionTest || minimapSignatureRejectionTest
-		|| revealSignatureRejectionTest )
+		|| revealSignatureRejectionTest || itemMarkerSignatureRejectionTest )
 	{
 		std::wstring commandLine = quoteArgument(executable.wstring());
 		std::vector<wchar_t> mutableCommand(commandLine.begin(), commandLine.end());
@@ -726,13 +733,16 @@ int wmain(int argc, wchar_t** argv)
 		const FoundProcess found { process.hProcess, process.dwProcessId };
 		std::wstring error;
 		const bool rejectionTest = signatureRejectionTest
-			|| minimapSignatureRejectionTest || revealSignatureRejectionTest;
-		const std::uintptr_t corruptRva = revealSignatureRejectionTest
-			? exitTooltipRva
-			: (minimapSignatureRejectionTest ? drawMinimapRva : xpCaptureRva);
-		const wchar_t* corruptName = revealSignatureRejectionTest
-			? L"exit reveal"
-			: (minimapSignatureRejectionTest ? L"minimap" : L"EXP");
+			|| minimapSignatureRejectionTest || revealSignatureRejectionTest
+			|| itemMarkerSignatureRejectionTest;
+		const std::uintptr_t corruptRva = itemMarkerSignatureRejectionTest
+			? terrainImageDrawCallRva
+			: (revealSignatureRejectionTest ? exitTooltipRva
+			: (minimapSignatureRejectionTest ? drawMinimapRva : xpCaptureRva));
+		const wchar_t* corruptName = itemMarkerSignatureRejectionTest
+			? L"party item marker"
+			: (revealSignatureRejectionTest ? L"exit reveal"
+			: (minimapSignatureRejectionTest ? L"minimap" : L"EXP"));
 		if ( rejectionTest && !corruptSignatureForTest(found, corruptRva,
 			corruptName, error) )
 		{

@@ -480,9 +480,9 @@ int main()
 	static_assert(quality::minimap::isExitSprite(161));
 	static_assert(quality::minimap::isExitSprite(256));
 	static_assert(!quality::minimap::isExitSprite(258));
-	static_assert(quality::minimap::isDetectedHostile(0x06000001U));
-	static_assert(!quality::minimap::isDetectedHostile(0x06000000U));
-	static_assert(!quality::minimap::isDetectedHostile(0x05000001U));
+	static_assert(quality::minimap::isDetectedUnit(0x06000001U));
+	static_assert(!quality::minimap::isDetectedUnit(0x06000000U));
+	static_assert(!quality::minimap::isDetectedUnit(0x05000001U));
 	static_assert(quality::minimap::classifyEntity(0, false, 0, true, false, false)
 		== quality::minimap::MarkerAppearance::Exit);
 	static_assert(quality::minimap::classifyEntity(990, false, 0, false, false, false)
@@ -492,7 +492,7 @@ int main()
 	static_assert(quality::minimap::classifyEntity(0, false, 0, false, false, true)
 		== quality::minimap::MarkerAppearance::Cauldron);
 	static_assert(quality::minimap::classifyEntity(0, false, 0x06000001U,
-		false, false, false) == quality::minimap::MarkerAppearance::DetectedHostile);
+		false, false, false) == quality::minimap::MarkerAppearance::DetectedUnit);
 	testReadmePercentages();
 	testRoundingAndMinimum();
 	testInspiration();

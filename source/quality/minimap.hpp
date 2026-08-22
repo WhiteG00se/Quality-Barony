@@ -118,7 +118,7 @@ namespace quality::minimap
 			|| (sprite >= 254 && sprite < 258);
 	}
 
-	constexpr bool isDetectedHostile(const std::uint32_t showOnMap)
+	constexpr bool isDetectedUnit(const std::uint32_t showOnMap)
 	{
 		return (showOnMap >> 24) == 6 && (showOnMap & 0xFFFFFFU) != 0;
 	}
@@ -130,7 +130,7 @@ namespace quality::minimap
 		Boulder,
 		Workbench,
 		Cauldron,
-		DetectedHostile,
+		DetectedUnit,
 	};
 
 	constexpr MarkerAppearance classifyEntity(const int sprite,
@@ -153,9 +153,9 @@ namespace quality::minimap
 		{
 			return MarkerAppearance::Cauldron;
 		}
-		if ( isDetectedHostile(showOnMap) )
+		if ( isDetectedUnit(showOnMap) )
 		{
-			return MarkerAppearance::DetectedHostile;
+			return MarkerAppearance::DetectedUnit;
 		}
 		return MarkerAppearance::None;
 	}

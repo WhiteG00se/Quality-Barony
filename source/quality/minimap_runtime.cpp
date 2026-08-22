@@ -213,7 +213,7 @@ namespace
 	enum class VisualKind
 	{
 		Exit, Boulder, Workbench, Cauldron, Minotaur, ShadowCreature,
-		DetectedHostile, Player, Follower, Unused,
+		Player, Follower, Unused,
 	};
 
 	struct Visual
@@ -1551,17 +1551,11 @@ namespace
 				continue;
 			}
 
-			if ( appearance == quality::minimap::MarkerAppearance::DetectedHostile )
-			{
-				visuals.push_back({VisualKind::DetectedHostile, tileX + .5,
-					tileY + .5, 0.0, -1, false});
-				suppressVanilla(entity, false);
-			}
 			if ( shadowTaggedUids.count(uid(entity)) && !partyUids.count(uid(entity)) )
 			{
 				visuals.push_back({VisualKind::ShadowCreature, worldX / 16.0,
 					worldY / 16.0, 0.0, -1, true});
-				if ( !quality::minimap::isDetectedHostile(showOnMap) )
+				if ( !quality::minimap::isDetectedUnit(showOnMap) )
 				{
 					suppressVanilla(entity, false);
 				}
@@ -1975,6 +1969,7 @@ namespace
 		{
 			const auto marker = transform(visual.x, visual.y, scope);
 			const float radius = std::min(marker.unitX, marker.unitY) * .5f;
+			constexpr float stationScale = 4.0f / 3.0f;
 			switch ( visual.kind )
 			{
 				case VisualKind::Exit:
@@ -1996,14 +1991,19 @@ namespace
 					break;
 				case VisualKind::Workbench:
 				case VisualKind::Cauldron:
-					circle(marker.x, marker.y, radius, quality::minimap::stationBlue, true);
+					circle(marker.x, marker.y, radius * stationScale,
+						quality::minimap::stationBlue, true);
 					if ( visual.kind == VisualKind::Workbench )
 					{
-						line({{marker.x-marker.unitX*.34f, marker.y-marker.unitY*.16f},
-							{marker.x-marker.unitX*.22f, marker.y+marker.unitY*.30f},
-							{marker.x, marker.y-marker.unitY*.02f},
-							{marker.x+marker.unitX*.22f, marker.y+marker.unitY*.30f},
-							{marker.x+marker.unitX*.34f, marker.y-marker.unitY*.16f}},
+						line({{marker.x-marker.unitX*.34f*stationScale,
+								marker.y-marker.unitY*.16f*stationScale},
+							{marker.x-marker.unitX*.22f*stationScale,
+								marker.y+marker.unitY*.30f*stationScale},
+							{marker.x, marker.y-marker.unitY*.02f*stationScale},
+							{marker.x+marker.unitX*.22f*stationScale,
+								marker.y+marker.unitY*.30f*stationScale},
+							{marker.x+marker.unitX*.34f*stationScale,
+								marker.y-marker.unitY*.16f*stationScale}},
 							quality::minimap::color(0, 64, 64));
 					}
 					else
@@ -2012,8 +2012,10 @@ namespace
 						for ( int index = 4; index <= 28; ++index )
 						{
 							const float angle = static_cast<float>(2.0*pi*index/32.0);
-							arc.emplace_back(marker.x + std::sin(angle)*marker.unitX*.31f,
-								marker.y + std::cos(angle)*marker.unitY*.31f);
+							arc.emplace_back(marker.x
+								+ std::sin(angle)*marker.unitX*.31f*stationScale,
+								marker.y
+								+ std::cos(angle)*marker.unitY*.31f*stationScale);
 						}
 						line(arc, quality::minimap::color(0, 64, 64));
 					}
@@ -2023,10 +2025,6 @@ namespace
 					break;
 				case VisualKind::ShadowCreature:
 					drawCircledSkull(marker, quality::minimap::shadowGray);
-					break;
-				case VisualKind::DetectedHostile:
-					circle(marker.x, marker.y, radius,
-						quality::minimap::minotaurRed, true);
 					break;
 				case VisualKind::Unused:
 					circle(marker.x, marker.y, radius,

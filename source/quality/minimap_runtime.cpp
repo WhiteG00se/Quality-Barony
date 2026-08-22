@@ -17,9 +17,11 @@
 #include "minimap_items.hpp"
 #include "minimap_reveal.hpp"
 #include "minimap_runtime.hpp"
+#include "runtime_layout.hpp"
 
 namespace
 {
+	namespace layout = quality::runtime::layout;
 	constexpr double pi = 3.14159265358979323846;
 	constexpr std::size_t relayStride = 256;
 	constexpr std::size_t drawHookBytes = 14;
@@ -47,6 +49,8 @@ namespace
 	constexpr std::uintptr_t pingColorBlockReturnRva = 0x0070A620;
 	constexpr std::uintptr_t calloutColorCallRva = 0x0070AE75;
 	constexpr std::uintptr_t terrainImageDrawCallRva = 0x00708EAF;
+	constexpr std::uintptr_t worldTooltipHeightPrimaryRva = 0x008B000C;
+	constexpr std::uintptr_t worldTooltipHeightAlternateRva = 0x008B1833;
 	constexpr std::array<std::uintptr_t, 4> exitTooltipCallRvas = {
 		0x005F451B, 0x005F4597, 0x005F460B, 0x005F4953,
 	};
@@ -97,6 +101,8 @@ namespace
 	constexpr std::size_t skillShowOnMap = 59;
 	constexpr std::size_t skillItemOriginalOwner = 21;
 	constexpr std::size_t skillItemContainer = 29;
+	constexpr std::size_t worldUiPlayer = 0;
+	constexpr std::size_t playerNumber = 0x10;
 	constexpr std::size_t skillColliderMaxHp = 9;
 	constexpr std::size_t skillColliderCurrentHp = 12;
 	constexpr std::size_t skillColliderContainedEntity = 15;
@@ -163,6 +169,23 @@ namespace
 	constexpr std::array<std::uint8_t, 5> terrainImageDrawCall = {
 		0xE8, 0x6C, 0xA4, 0x1A, 0x00,
 	};
+	constexpr std::array<std::uint8_t, 46> worldTooltipHeightPrimary = {
+		0x8B, 0x48, 0x30, 0x89, 0x4C, 0x24, 0x78, 0x48,
+		0x8D, 0x8B, 0x48, 0x01, 0x00, 0x00, 0x48, 0x83,
+		0x79, 0x18, 0x0F, 0x76, 0x03, 0x48, 0x8B, 0x09,
+		0xE8, 0x07, 0x86, 0xF6, 0xFF, 0xB2, 0x01, 0x48,
+		0x8B, 0xC8, 0xE8, 0x0D, 0x88, 0xF6, 0xFF, 0x83,
+		0xC0, 0x08, 0x89, 0x44, 0x24, 0x7C,
+	};
+	constexpr std::array<std::uint8_t, 50> worldTooltipHeightAlternate = {
+		0x8B, 0x40, 0x30, 0x89, 0x44, 0x24, 0x34, 0x89,
+		0x44, 0x24, 0x78, 0x49, 0x8D, 0x8F, 0x48, 0x01,
+		0x00, 0x00, 0x48, 0x83, 0x79, 0x18, 0x0F, 0x76,
+		0x03, 0x48, 0x8B, 0x09, 0xE8, 0xDC, 0x6D, 0xF6,
+		0xFF, 0xB2, 0x01, 0x48, 0x8B, 0xC8, 0xE8, 0xE2,
+		0x6F, 0xF6, 0xFF, 0x83, 0xC0, 0x08, 0x89, 0x44,
+		0x24, 0x7C,
+	};
 	constexpr std::array<std::array<std::uint8_t, 5>, 4> ghostColorCalls = {{
 		{0xE8, 0x41, 0x41, 0x16, 0x00},
 		{0xE8, 0x64, 0x40, 0x16, 0x00},
@@ -210,6 +233,8 @@ namespace
 	using DrawTriangleFn = void (*)(void*, double, double, double, double,
 		Rect, std::uint32_t, bool);
 	using PlayerColorFn = std::uint32_t (*)(int, bool, bool);
+	using GetStatsFn = std::uint8_t* (*)(std::uint8_t*);
+	using MonsterIsFriendlyForTooltipFn = bool (*)(int, std::uint8_t*);
 	using PlaySoundFn = void (*)(int, int);
 	using LoadMapFn = int (*)(const char*, void*, List*, List*, int*);
 	using LanguageGetFn = const char* (*)(int);
@@ -261,6 +286,8 @@ namespace
 	ImageDrawFn imageDraw = nullptr;
 	DrawTriangleFn drawTriangle = nullptr;
 	PlayerColorFn originalPlayerColor = nullptr;
+	GetStatsFn getStats = nullptr;
+	MonsterIsFriendlyForTooltipFn monsterIsFriendlyForTooltip = nullptr;
 	PlaySoundFn playSound = nullptr;
 	LoadMapFn originalLoadMap = nullptr;
 	LanguageGetFn languageGet = nullptr;
@@ -279,6 +306,7 @@ namespace
 	bool minotaurAlerted = false;
 	quality::minimap::reveal::State revealState;
 	std::vector<quality::minimap::reveal::Candidate> revealCandidates;
+	std::array<char, 512> exitTooltipText {};
 	quality::minimap::items::State partyItemState;
 	std::unordered_set<std::uint32_t> seenWorldItems;
 	bool inMinimapDraw = false;
@@ -930,7 +958,62 @@ namespace
 		return result;
 	}
 
-	const char* exitTooltipHook(const int languageId)
+	std::pair<int, int> exitCreatureCounts(std::uint8_t* worldUi)
+	{
+		int hostiles = 0;
+		int neutrals = 0;
+		if ( !worldUi || !getStats || !monsterIsFriendlyForTooltip )
+		{
+			return {hostiles, neutrals};
+		}
+		auto* player = field<std::uint8_t*>(worldUi, worldUiPlayer);
+		if ( !player )
+		{
+			return {hostiles, neutrals};
+		}
+		const int viewer = field<std::int32_t>(player, playerNumber);
+		if ( viewer < 0 || viewer >= 4 )
+		{
+			return {hostiles, neutrals};
+		}
+		auto* creatures = *reinterpret_cast<List**>(base + mapCreaturesRva);
+		if ( !creatures )
+		{
+			return {hostiles, neutrals};
+		}
+		for ( Node* node = creatures->first; node; node = node->next )
+		{
+			auto* entity = static_cast<std::uint8_t*>(node->element);
+			if ( !entity )
+			{
+				continue;
+			}
+			const bool monster = behavior(entity)
+				== reinterpret_cast<std::uintptr_t>(base + actMonsterRva);
+			auto* stats = monster ? getStats(entity) : nullptr;
+			const int hp = stats
+				? field<std::int32_t>(stats, layout::statHp) : 0;
+			const int allyIndex = skill(entity, skillMonsterAllyIndex);
+			const bool countable = monster && allyIndex < 0 && stats && hp > 0;
+			const bool friendly = countable
+				&& monsterIsFriendlyForTooltip(viewer, entity);
+			switch ( quality::minimap::classifyExitCreature(monster, allyIndex,
+				stats != nullptr, hp, friendly) )
+			{
+				case quality::minimap::ExitCreatureDisposition::Hostile:
+					++hostiles;
+					break;
+				case quality::minimap::ExitCreatureDisposition::Neutral:
+					++neutrals;
+					break;
+				default:
+					break;
+			}
+		}
+		return {hostiles, neutrals};
+	}
+
+	const char* exitTooltipHook(const int languageId, std::uint8_t* worldUi)
 	{
 		const char* text = languageGet(languageId);
 		if ( revealState.tooltipEdge(
@@ -938,7 +1021,10 @@ namespace
 		{
 			requestTeamRefresh();
 		}
-		return text;
+		const auto counts = exitCreatureCounts(worldUi);
+		quality::minimap::formatExitTooltip(exitTooltipText.data(),
+			exitTooltipText.size(), text, counts.first, counts.second);
+		return exitTooltipText.data();
 	}
 
 	void headstoneDialogueHook(void* dialogue, const std::uint32_t entityUid,
@@ -1839,6 +1925,20 @@ namespace
 		destination[11] = 0xE0;
 	}
 
+	void writeExitTooltipRelay(std::uint8_t* destination, const void* target)
+	{
+		// All verified exit call sites keep WorldUI_t* in RSI.
+		destination[0] = 0x48;
+		destination[1] = 0x89;
+		destination[2] = 0xF2;
+		destination[3] = 0x48;
+		destination[4] = 0xB8;
+		const auto address = reinterpret_cast<std::uintptr_t>(target);
+		std::memcpy(destination + 5, &address, sizeof(address));
+		destination[13] = 0xFF;
+		destination[14] = 0xE0;
+	}
+
 	std::vector<std::uint8_t> relativeCall(const std::uintptr_t fromRva,
 		const void* destination)
 	{
@@ -1943,11 +2043,18 @@ namespace
 			|| !matches(loadMapRva, loadMapSignature)
 			|| !matches(languageGetRva, languageGetSignature)
 			|| !matches(createDialogueRva, createDialogueSignature)
+			|| !matches(layout::getStatsRva, layout::getStatsSignature)
+			|| !matches(layout::monsterIsFriendlyForTooltipRva,
+				layout::monsterIsFriendlyForTooltipSignature)
 			|| !matches(lootBagColorCallRva, lootBagColorCall)
 			|| !matches(lootBagColorblindCallRva, lootBagColorblindCall)
 			|| !matches(pingColorBlockRva, pingColorBlock)
 			|| !matches(calloutColorCallRva, calloutColorCall)
-			|| !matches(terrainImageDrawCallRva, terrainImageDrawCall) )
+			|| !matches(terrainImageDrawCallRva, terrainImageDrawCall)
+			|| !matches(worldTooltipHeightPrimaryRva,
+				worldTooltipHeightPrimary)
+			|| !matches(worldTooltipHeightAlternateRva,
+				worldTooltipHeightAlternate) )
 		{
 			return false;
 		}
@@ -2026,6 +2133,10 @@ namespace quality::minimap_runtime
 		playSound = reinterpret_cast<PlaySoundFn>(base + playSoundRva);
 		languageGet = reinterpret_cast<LanguageGetFn>(base + languageGetRva);
 		createDialogue = reinterpret_cast<CreateDialogueFn>(base + createDialogueRva);
+		getStats = reinterpret_cast<GetStatsFn>(base + layout::getStatsRva);
+		monsterIsFriendlyForTooltip =
+			reinterpret_cast<MonsterIsFriendlyForTooltipFn>(
+				base + layout::monsterIsFriendlyForTooltipRva);
 		udpRecv = *reinterpret_cast<UdpRecvFn*>(base + udpRecvIatRva);
 		udpSend = *reinterpret_cast<UdpSendFn*>(base + udpSendIatRva);
 		relayPage = allocateNearModule(6 * relayStride);
@@ -2048,7 +2159,8 @@ namespace quality::minimap_runtime
 		auto* imageDrawRelay = relay + 5 * relayStride;
 		writeRelay(playerColorRelay, reinterpret_cast<void*>(&playerColorHook));
 		writeRelay(ghostTriangleRelay, reinterpret_cast<void*>(&ghostTriangleHook));
-		writeRelay(exitTooltipRelay, reinterpret_cast<void*>(&exitTooltipHook));
+		writeExitTooltipRelay(exitTooltipRelay,
+			reinterpret_cast<void*>(&exitTooltipHook));
 		writeRelay(headstoneDialogueRelay,
 			reinterpret_cast<void*>(&headstoneDialogueHook));
 		writeRelay(imageDrawRelay, reinterpret_cast<void*>(&imageDrawHook));
@@ -2083,6 +2195,27 @@ namespace quality::minimap_runtime
 		}
 		addPatch(patches, terrainImageDrawCallRva, terrainImageDrawCall,
 			relativeCall(terrainImageDrawCallRva, imageDrawRelay));
+		std::vector<std::uint8_t> primaryTooltipHeight = {
+			0x8B, 0x48, 0x30,             // width = rendered text width
+			0x89, 0x4C, 0x24, 0x78,
+			0x8B, 0x40, 0x34,             // height = rendered text height
+			0x83, 0xC0, 0x08,             // retain Barony's padding
+			0x89, 0x44, 0x24, 0x7C,
+		};
+		primaryTooltipHeight.resize(worldTooltipHeightPrimary.size(), 0x90);
+		addPatch(patches, worldTooltipHeightPrimaryRva,
+			worldTooltipHeightPrimary, std::move(primaryTooltipHeight));
+		std::vector<std::uint8_t> alternateTooltipHeight = {
+			0x8B, 0x48, 0x30,             // width = rendered text width
+			0x89, 0x4C, 0x24, 0x34,
+			0x89, 0x4C, 0x24, 0x78,
+			0x8B, 0x40, 0x34,             // height = rendered text height
+			0x83, 0xC0, 0x08,             // retain Barony's padding
+			0x89, 0x44, 0x24, 0x7C,
+		};
+		alternateTooltipHeight.resize(worldTooltipHeightAlternate.size(), 0x90);
+		addPatch(patches, worldTooltipHeightAlternateRva,
+			worldTooltipHeightAlternate, std::move(alternateTooltipHeight));
 		for ( std::size_t index = 0; index < headstoneDialogueCallRvas.size(); ++index )
 		{
 			addPatch(patches, headstoneDialogueCallRvas[index],

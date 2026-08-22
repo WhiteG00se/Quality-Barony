@@ -142,6 +142,40 @@ namespace
 		static_assert(!eligibleGroundGold(1, 42));
 	}
 
+	void testExitCreatureCountsAndText()
+	{
+		using quality::minimap::ExitCreatureDisposition;
+		using quality::minimap::classifyExitCreature;
+		assert(classifyExitCreature(true, -1, true, 10, false)
+			== ExitCreatureDisposition::Hostile);
+		assert(classifyExitCreature(true, -1, true, 10, true)
+			== ExitCreatureDisposition::Neutral);
+		assert(classifyExitCreature(true, 0, true, 10, false)
+			== ExitCreatureDisposition::Excluded);
+		assert(classifyExitCreature(true, -1, true, 0, false)
+			== ExitCreatureDisposition::Excluded);
+		assert(classifyExitCreature(true, -1, true, -1, false)
+			== ExitCreatureDisposition::Excluded);
+		assert(classifyExitCreature(true, -1, false, 10, false)
+			== ExitCreatureDisposition::Excluded);
+		assert(classifyExitCreature(false, -1, true, 10, false)
+			== ExitCreatureDisposition::Excluded);
+
+		std::array<char, 128> text {};
+		quality::minimap::formatExitTooltip(text.data(), text.size(),
+			"Exit dungeon floor", 0, 0);
+		assert(std::string(text.data())
+			== "Exit dungeon floor\n[0 hostiles / 0 neutrals alive]");
+		quality::minimap::formatExitTooltip(text.data(), text.size(),
+			"Exit secret level", 1, 1);
+		assert(std::string(text.data())
+			== "Exit secret level\n[1 hostiles / 1 neutrals alive]");
+		quality::minimap::formatExitTooltip(text.data(), text.size(),
+			"Step through portal", 12, 3);
+		assert(std::string(text.data())
+			== "Step through portal\n[12 hostiles / 3 neutrals alive]");
+	}
+
 	void testPersistentRevealLifecycle()
 	{
 		using namespace quality::minimap::reveal;
@@ -404,6 +438,7 @@ int main()
 	testEligibilityDeduplicationAndLastHit();
 	testRevealEligibility();
 	testGroundGoldEligibility();
+	testExitCreatureCountsAndText();
 	testPersistentRevealLifecycle();
 	testGroundGoldLiveLifecycle();
 	testTooltipDebounce();

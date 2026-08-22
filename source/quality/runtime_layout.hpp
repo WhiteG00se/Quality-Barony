@@ -15,6 +15,7 @@ namespace quality::runtime::layout
 	constexpr std::uintptr_t entityInspirationRva = 0x00466540;
 	constexpr std::uintptr_t monsterIsTinkeringCreationRva = 0x0034AE10;
 	constexpr std::uintptr_t monsterAllyGetPlayerLeaderRva = 0x003482F0;
+	constexpr std::uintptr_t monsterIsFriendlyForTooltipRva = 0x005F2A80;
 	constexpr std::uintptr_t statGetAttributeRva = 0x00340570;
 	constexpr std::uintptr_t msvcStringDestroyRva = 0x002C1D40;
 	constexpr std::uintptr_t steamAchievementEntityRva = 0x00646EA0;
@@ -81,6 +82,10 @@ namespace quality::runtime::layout
 	constexpr std::array<std::uint8_t, 16> monsterAllyGetPlayerLeaderSignature = {
 		0x48, 0x8D, 0x05, 0xD9, 0x51, 0xFE, 0xFF, 0x48,
 		0x39, 0x81, 0x50, 0x13, 0x00, 0x00, 0x75, 0x27,
+	};
+	constexpr std::array<std::uint8_t, 16> monsterIsFriendlyForTooltipSignature = {
+		0x48, 0x89, 0x5C, 0x24, 0x10, 0x48, 0x89, 0x6C,
+		0x24, 0x18, 0x56, 0x57, 0x41, 0x56, 0x48, 0x83,
 	};
 	constexpr std::array<std::uint8_t, 16> statGetAttributeSignature = {
 		0x48, 0x89, 0x5C, 0x24, 0x20, 0x55, 0x56, 0x57,

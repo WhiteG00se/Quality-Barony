@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdio>
 #include <cstdint>
 
 namespace quality::minimap
@@ -66,6 +67,37 @@ namespace quality::minimap
 	constexpr bool ordinarilyExplored(const std::uint8_t visibility)
 	{
 		return visibility == 1 || visibility == 2;
+	}
+
+	enum class ExitCreatureDisposition : std::uint8_t
+	{
+		Excluded,
+		Hostile,
+		Neutral,
+	};
+
+	constexpr ExitCreatureDisposition classifyExitCreature(
+		const bool monster, const int allyIndex, const bool hasStats,
+		const int hp, const bool friendly)
+	{
+		if ( !monster || allyIndex >= 0 || !hasStats || hp <= 0 )
+		{
+			return ExitCreatureDisposition::Excluded;
+		}
+		return friendly ? ExitCreatureDisposition::Neutral
+			: ExitCreatureDisposition::Hostile;
+	}
+
+	inline int formatExitTooltip(char* output, const std::size_t outputSize,
+		const char* exitText, const int hostiles, const int neutrals)
+	{
+		if ( !output || outputSize == 0 )
+		{
+			return -1;
+		}
+		return std::snprintf(output, outputSize,
+			"%s\n[%d hostiles / %d neutrals alive]",
+			exitText ? exitText : "", hostiles, neutrals);
 	}
 
 	constexpr bool exitVisible(const std::uint8_t visibility,

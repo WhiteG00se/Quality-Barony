@@ -47,8 +47,9 @@ namespace
 	constexpr std::uintptr_t pingColorBlockReturnRva = 0x0070A620;
 	constexpr std::uintptr_t calloutColorCallRva = 0x0070AE75;
 	constexpr std::uintptr_t terrainImageDrawCallRva = 0x00708EAF;
-	constexpr std::uintptr_t exitTooltipLadderCallRva = 0x005F451B;
-	constexpr std::uintptr_t exitTooltipPortalCallRva = 0x005F4597;
+	constexpr std::array<std::uintptr_t, 4> exitTooltipCallRvas = {
+		0x005F451B, 0x005F4597, 0x005F460B, 0x005F4953,
+	};
 	constexpr std::array<std::uintptr_t, 4> headstoneDialogueCallRvas = {
 		0x0030E1C2, 0x0030E2CD, 0x0030E3DA, 0x0030E4F8,
 	};
@@ -132,12 +133,12 @@ namespace
 		0x48, 0x8B, 0xC4, 0x4C, 0x89, 0x48, 0x20, 0x55,
 		0x53, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41,
 	};
-	constexpr std::array<std::uint8_t, 5> exitTooltipLadderCall = {
-		0xE8, 0x90, 0xF2, 0xED, 0xFF,
-	};
-	constexpr std::array<std::uint8_t, 5> exitTooltipPortalCall = {
-		0xE8, 0x14, 0xF2, 0xED, 0xFF,
-	};
+	constexpr std::array<std::array<std::uint8_t, 5>, 4> exitTooltipCalls = {{
+		{0xE8, 0x90, 0xF2, 0xED, 0xFF},
+		{0xE8, 0x14, 0xF2, 0xED, 0xFF},
+		{0xE8, 0xA0, 0xF1, 0xED, 0xFF},
+		{0xE8, 0x58, 0xEE, 0xED, 0xFF},
+	}};
 	constexpr std::array<std::array<std::uint8_t, 5>, 4> headstoneDialogueCalls = {{
 		{0xE8, 0xA9, 0x21, 0x53, 0x00},
 		{0xE8, 0x9E, 0x20, 0x53, 0x00},
@@ -932,7 +933,7 @@ namespace
 	const char* exitTooltipHook(const int languageId)
 	{
 		const char* text = languageGet(languageId);
-		if ( languageId == 4030 && revealState.tooltipEdge(
+		if ( revealState.tooltipEdge(
 			*reinterpret_cast<std::uint32_t*>(base + ticksRva)) )
 		{
 			requestTeamRefresh();
@@ -1942,8 +1943,6 @@ namespace
 			|| !matches(loadMapRva, loadMapSignature)
 			|| !matches(languageGetRva, languageGetSignature)
 			|| !matches(createDialogueRva, createDialogueSignature)
-			|| !matches(exitTooltipLadderCallRva, exitTooltipLadderCall)
-			|| !matches(exitTooltipPortalCallRva, exitTooltipPortalCall)
 			|| !matches(lootBagColorCallRva, lootBagColorCall)
 			|| !matches(lootBagColorblindCallRva, lootBagColorblindCall)
 			|| !matches(pingColorBlockRva, pingColorBlock)
@@ -1951,6 +1950,13 @@ namespace
 			|| !matches(terrainImageDrawCallRva, terrainImageDrawCall) )
 		{
 			return false;
+		}
+		for ( std::size_t index = 0; index < exitTooltipCallRvas.size(); ++index )
+		{
+			if ( !matches(exitTooltipCallRvas[index], exitTooltipCalls[index]) )
+			{
+				return false;
+			}
 		}
 		for ( std::size_t index = 0; index < ghostColorCallRvas.size(); ++index )
 		{
@@ -2070,10 +2076,11 @@ namespace quality::minimap_runtime
 			absoluteJump(reinterpret_cast<void*>(&drawMinimapHook)));
 		addPatch(patches, loadMapRva, loadMapSignature,
 			absoluteJump(reinterpret_cast<void*>(&loadMapHook)));
-		addPatch(patches, exitTooltipLadderCallRva, exitTooltipLadderCall,
-			relativeCall(exitTooltipLadderCallRva, exitTooltipRelay));
-		addPatch(patches, exitTooltipPortalCallRva, exitTooltipPortalCall,
-			relativeCall(exitTooltipPortalCallRva, exitTooltipRelay));
+		for ( std::size_t index = 0; index < exitTooltipCallRvas.size(); ++index )
+		{
+			addPatch(patches, exitTooltipCallRvas[index], exitTooltipCalls[index],
+				relativeCall(exitTooltipCallRvas[index], exitTooltipRelay));
+		}
 		addPatch(patches, terrainImageDrawCallRva, terrainImageDrawCall,
 			relativeCall(terrainImageDrawCallRva, imageDrawRelay));
 		for ( std::size_t index = 0; index < headstoneDialogueCallRvas.size(); ++index )

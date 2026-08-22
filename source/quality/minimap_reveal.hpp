@@ -195,17 +195,28 @@ namespace quality::minimap::reveal
 			{
 				live.insert(candidate.uid);
 				auto marker = markers_.find(candidate.uid);
-				if ( marker == markers_.end() )
-				{
-					continue;
-				}
 				if ( !eligible(candidate, used(candidate.uid)) )
 				{
-					markers_.erase(marker);
+					if ( marker != markers_.end() )
+					{
+						markers_.erase(marker);
+					}
+					continue;
+				}
+				if ( marker == markers_.end() )
+				{
+					if ( active_ )
+					{
+						markers_[candidate.uid] = {
+							candidate.uid, candidate.x, candidate.y,
+							markerKind(candidate.kind),
+						};
+					}
 					continue;
 				}
 				marker->second.x = candidate.x;
 				marker->second.y = candidate.y;
+				marker->second.kind = markerKind(candidate.kind);
 			}
 			for ( auto marker = markers_.begin(); marker != markers_.end(); )
 			{

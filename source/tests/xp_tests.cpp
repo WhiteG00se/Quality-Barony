@@ -142,11 +142,13 @@ namespace
 		static_assert(!eligibleGroundGold(1, 42));
 	}
 
-	void testRefreshableSnapshot()
+	void testPersistentRevealLifecycle()
 	{
 		using namespace quality::minimap::reveal;
 		State state;
 		state.reset();
+		state.observeLive({{5, 1, 1, CandidateKind::Item}});
+		assert(!state.contains(5));
 		state.rememberInitialUses(10, 2);
 		state.refresh({
 			{10, 1, 1, CandidateKind::Fountain},
@@ -165,13 +167,38 @@ namespace
 		});
 		assert(state.contains(10));
 		assert(!state.contains(20));
-		assert(!state.contains(40));
+		assert(state.contains(40));
 		const auto markers = state.markers();
+		assert(markers.size() == 3);
 		assert(markers[0].uid == 10 && markers[0].x == 4 && markers[0].y == 5);
+		assert(markers[2].uid == 40
+			&& markers[2].kind == Kind::Unused);
+
+		Candidate ineligible {50, 5, 5, CandidateKind::Item};
+		ineligible.playerOwned = true;
+		Candidate lootBag {51, 5, 6, CandidateKind::Item};
+		lootBag.lootBag = true;
+		state.observeLive({
+			{10, 4, 5, CandidateKind::Fountain},
+			{30, 3, 3, CandidateKind::Exit},
+			{40, 4, 4, CandidateKind::Item},
+			ineligible,
+			lootBag,
+		});
+		assert(!state.contains(50));
+		assert(!state.contains(51));
+		ineligible.playerOwned = false;
+		state.observeLive({
+			{10, 4, 5, CandidateKind::Fountain},
+			{30, 3, 3, CandidateKind::Exit},
+			{40, 4, 4, CandidateKind::Item},
+			ineligible,
+		});
+		assert(state.contains(50));
 
 		state.observeUses(10, 1);
 		assert(!state.contains(10));
-		state.refresh({
+		state.observeLive({
 			{10, 1, 1, CandidateKind::Fountain},
 			{40, 4, 4, CandidateKind::Item},
 		});
@@ -180,9 +207,11 @@ namespace
 		state.reset();
 		assert(!state.active());
 		assert(state.markers().empty());
+		state.observeLive({{60, 6, 6, CandidateKind::Item}});
+		assert(!state.contains(60));
 	}
 
-	void testGroundGoldSnapshotLifecycle()
+	void testGroundGoldLiveLifecycle()
 	{
 		using namespace quality::minimap::reveal;
 		State state;
@@ -193,13 +222,14 @@ namespace
 			{60, 12, 13, CandidateKind::Gold},
 		});
 		assert(state.contains(50));
-		assert(!state.contains(60));
+		assert(state.contains(60));
 		const auto markers = state.markers();
-		assert(markers.size() == 1);
+		assert(markers.size() == 2);
 		assert(markers[0].uid == 50 && markers[0].x == 10
 			&& markers[0].y == 11);
 		state.observeLive({});
 		assert(!state.contains(50));
+		assert(!state.contains(60));
 	}
 
 	void testTooltipDebounce()
@@ -374,8 +404,8 @@ int main()
 	testEligibilityDeduplicationAndLastHit();
 	testRevealEligibility();
 	testGroundGoldEligibility();
-	testRefreshableSnapshot();
-	testGroundGoldSnapshotLifecycle();
+	testPersistentRevealLifecycle();
+	testGroundGoldLiveLifecycle();
 	testTooltipDebounce();
 	testRevealSynchronizationGates();
 	testPartyItemPickupDropIdentity();

@@ -16,17 +16,17 @@
 <details>
 <summary><strong>EXP Multipliers</strong></summary>
 
-| EXP Receiver | Range | Solo | 2 players | 3 players | 4 players |
-|---|---:|---:|---:|---:|---:|
-| Ordinary follower<br>(other player last hits) | ~~\~6,250 tiles~~<br>`Global` | — | ~~0%~~<br>`130%` | ~~0%~~<br>`110%` | ~~0%~~<br>`90%` |
-| Ordinary follower<br>(its player last hits) | ~~\~6,250 tiles~~<br>`Global` | ~~100%~~<br>`150%` | ~~90%~~<br>`130%` | ~~80%~~<br>`110%` | ~~70%~~<br>`90%` |
-| Ordinary follower<br>(it last hits) | ~~\~6,250 tiles~~<br>`Global` | ~~200%~~<br>`150%` | ~~190%~~<br>`130%` | ~~180%~~<br>`110%` | ~~170%~~<br>`90%` |
-| Conjurer summon<br>(other player last hits) | ~~\~6,250 tiles~~<br>`Global` | — | ~~0%~~<br>`130%` | ~~0%~~<br>`110%` | ~~0%~~<br>`90%` |
-| Conjurer summon<br>(its player last hits) | ~~\~6,250 tiles~~<br>`Global` | ~~100%~~<br>`150%` | ~~100%~~<br>`130%` | ~~100%~~<br>`110%` | ~~100%~~<br>`90%` |
-| Conjurer summon<br>(it last hits) | ~~\~6,250 tiles~~<br>`Global` | ~~200%~~<br>`150%` | ~~200%~~<br>`130%` | ~~200%~~<br>`110%` | ~~200%~~<br>`90%` |
-| Player (last hits) | Global | 100% | 90% | 80% | 70% |
-| Player (any follower last hits) | Global | 100% | 90% | 80% | 70% |
-| Player (other player last hits) | Global | — | 90% | 80% | 70% |
+| EXP Receiver | Condition | Solo | 2 Players | 3 Players | 4 Players |
+|---|---|---:|---:|---:|---:|
+| Ordinary follower | Other player gets last hit | — | 100% | 90% | 80% |
+| Ordinary follower | Owner player gets last hit | 125% | 100% | 90% | 80% |
+| Ordinary follower | Follower gets last hit | 125% | 100% | 90% | 80% |
+| Conjurer summon | Other player gets last hit | — | 100% | 90% | 80% |
+| Conjurer summon | Owner player gets last hit | 125% | 100% | 90% | 80% |
+| Conjurer summon | Summon gets last hit | 125% | 100% | 90% | 80% |
+| Player | Player gets last hit | 100% | 90% | 80% | 70% |
+| Player | Any follower gets last hit | 100% | 90% | 80% | 70% |
+| Player | Other player gets last hit | — | 90% | 80% | 70% |
 
 Player shares have a 3-EXP minimum. Follower gains use integer rounding without a minimum.
 

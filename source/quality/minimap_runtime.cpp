@@ -314,6 +314,8 @@ namespace
 	quality::minimap::reveal::State revealState;
 	std::vector<quality::minimap::reveal::Candidate> revealCandidates;
 	std::array<char, 512> exitTooltipText {};
+	std::pair<int, int> synchronizedExitCounts {};
+	bool synchronizedExitCountsValid = false;
 	quality::minimap::items::State partyItemState;
 	quality::minimap::chests::State chestState;
 	std::unordered_set<std::uint32_t> seenWorldItems;
@@ -585,6 +587,14 @@ namespace
 	}
 
 	void refreshRevealSnapshot();
+	std::pair<int, int> exitCreatureCountsForViewer(int viewer);
+
+	ItemPacketPayload exitCountsPayload(const int viewer)
+	{
+		const auto counts = exitCreatureCountsForViewer(viewer);
+		return {static_cast<std::uint32_t>(counts.first),
+			static_cast<std::uint32_t>(counts.second)};
+	}
 
 	void broadcastToReadyClients(const PacketKind kind,
 		const ItemPacketPayload payload = {})
@@ -616,7 +626,30 @@ namespace
 
 	void broadcastRefresh()
 	{
-		broadcastToReadyClients(PacketKind::Refresh);
+		if ( multiplayerMode() != 1 )
+		{
+			return;
+		}
+		auto* clients = *reinterpret_cast<IpAddress**>(base + netClientsPointerRva);
+		const auto* disconnected = base + clientDisconnectedRva;
+		if ( !clients )
+		{
+			return;
+		}
+		for ( int player = 1; player < 4; ++player )
+		{
+			if ( disconnected[player] )
+			{
+				continue;
+			}
+			const IpAddress destination = clients[player - 1];
+			const auto generation = clientGenerations.find(addressKey(destination));
+			if ( generation != clientGenerations.end() )
+			{
+				queueReliable(PacketKind::Refresh, destination, generation->second,
+					exitCountsPayload(player));
+			}
+		}
 	}
 
 	ItemPacketPayload itemPayload(const quality::minimap::items::Marker& marker)
@@ -669,11 +702,14 @@ namespace
 	{
 		revealState.reset();
 		revealCandidates.clear();
+		synchronizedExitCounts = {};
+		synchronizedExitCountsValid = false;
 		partyItemState.reset();
 		chestState.reset();
 		seenWorldItems.clear();
 		pendingPackets.clear();
-		clientGenerations.clear();
+		// A client can finish loading and announce readiness before the host.
+		// Keep that announcement; floor identity still gates every packet.
 		appliedPackets.clear();
 		++localGeneration;
 		if ( localGeneration == 0 )
@@ -742,10 +778,21 @@ namespace
 			auto& accepted = clientGenerations[addressKey(packet->address)];
 			if ( kind == PacketKind::Ready )
 			{
-				accepted = std::max(accepted, generation);
+				// The same address can belong to a new session whose counter restarted.
+				accepted = generation;
 				if ( revealState.active() )
 				{
-					queueReliable(PacketKind::Refresh, packet->address, accepted);
+					int player = 1;
+					for ( int index = 0; index < 3; ++index )
+					{
+						if ( sameAddress(clients[index], packet->address) )
+						{
+							player = index + 1;
+							break;
+						}
+					}
+					queueReliable(PacketKind::Refresh, packet->address, accepted,
+						exitCountsPayload(player));
 				}
 				for ( const auto& marker : partyItemState.markers() )
 				{
@@ -775,6 +822,11 @@ namespace
 		{
 			if ( kind == PacketKind::Refresh )
 			{
+				synchronizedExitCounts = {
+					static_cast<int>(readU32(packet->data, 32)),
+					static_cast<int>(readU32(packet->data, 36)),
+				};
+				synchronizedExitCountsValid = true;
 				refreshRevealSnapshot();
 			}
 			else
@@ -1074,21 +1126,12 @@ namespace
 		return result;
 	}
 
-	std::pair<int, int> exitCreatureCounts(std::uint8_t* worldUi)
+	std::pair<int, int> exitCreatureCountsForViewer(const int viewer)
 	{
 		int hostiles = 0;
 		int neutrals = 0;
-		if ( !worldUi || !getStats || !monsterIsFriendlyForTooltip )
-		{
-			return {hostiles, neutrals};
-		}
-		auto* player = field<std::uint8_t*>(worldUi, worldUiPlayer);
-		if ( !player )
-		{
-			return {hostiles, neutrals};
-		}
-		const int viewer = field<std::int32_t>(player, playerNumber);
-		if ( viewer < 0 || viewer >= 4 )
+		if ( viewer < 0 || viewer >= 4 || !getStats
+			|| !monsterIsFriendlyForTooltip )
 		{
 			return {hostiles, neutrals};
 		}
@@ -1127,6 +1170,25 @@ namespace
 			}
 		}
 		return {hostiles, neutrals};
+	}
+
+	std::pair<int, int> exitCreatureCounts(std::uint8_t* worldUi)
+	{
+		if ( multiplayerMode() == 2 && synchronizedExitCountsValid )
+		{
+			return synchronizedExitCounts;
+		}
+		if ( !worldUi )
+		{
+			return {};
+		}
+		auto* player = field<std::uint8_t*>(worldUi, worldUiPlayer);
+		if ( !player )
+		{
+			return {};
+		}
+		return exitCreatureCountsForViewer(
+			field<std::int32_t>(player, playerNumber));
 	}
 
 	const char* exitTooltipHook(const int languageId, std::uint8_t* worldUi)

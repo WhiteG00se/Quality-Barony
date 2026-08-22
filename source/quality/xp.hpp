@@ -22,18 +22,13 @@ namespace quality::xp
 		return 100 - (clampPartySize(partySize) - 1) * 10;
 	}
 
-	constexpr int followerPermille(const int partySize)
+	constexpr int followerPercent(const int partySize)
 	{
 		constexpr std::array<int, maximumPartySize> percentages = {
-			1250, 1125, 1000, 875
+			120, 108, 96, 84
 		};
 		return percentages[static_cast<std::size_t>(
 			clampPartySize(partySize) - minimumPartySize)];
-	}
-
-	constexpr double followerPercent(const int partySize)
-	{
-		return followerPermille(partySize) / 10.0;
 	}
 
 	constexpr int scale(const int value, const int percent)
@@ -58,13 +53,7 @@ namespace quality::xp
 
 	constexpr int followerGain(const int ownerUnsharedXp, const int partySize)
 	{
-		const auto scaled = static_cast<std::int64_t>(ownerUnsharedXp)
-			* followerPermille(partySize) / 1000;
-		return scaled > std::numeric_limits<int>::max()
-			? std::numeric_limits<int>::max()
-			: (scaled < std::numeric_limits<int>::min()
-				? std::numeric_limits<int>::min()
-				: static_cast<int>(scaled));
+		return scale(ownerUnsharedXp, followerPercent(partySize));
 	}
 
 	constexpr int withInspiration(const int xp, const int inspirationPercent)

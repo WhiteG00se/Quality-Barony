@@ -19,7 +19,7 @@ namespace
 	void testReadmePercentages()
 	{
 		constexpr std::array<int, 4> player = { 100, 90, 80, 70 };
-		constexpr std::array<double, 4> follower = { 125, 112.5, 100, 87.5 };
+		constexpr std::array<int, 4> follower = { 120, 108, 96, 84 };
 		for ( int partySize = 1; partySize <= 4; ++partySize )
 		{
 			const auto index = static_cast<std::size_t>(partySize - 1);
@@ -28,8 +28,8 @@ namespace
 		}
 		assert(quality::xp::playerPercent(0) == 100);
 		assert(quality::xp::playerPercent(5) == 70);
-		assert(quality::xp::followerPercent(0) == 125);
-		assert(quality::xp::followerPercent(5) == 87.5);
+		assert(quality::xp::followerPercent(0) == 120);
+		assert(quality::xp::followerPercent(5) == 84);
 	}
 
 	void testRoundingAndMinimum()
@@ -43,8 +43,8 @@ namespace
 		assert(quality::xp::playerGain(0, 4) == 0);
 
 		assert(quality::xp::followerGain(11, 1) == 13);
-		assert(quality::xp::followerGain(11, 2) == 12);
-		assert(quality::xp::followerGain(11, 3) == 11);
+		assert(quality::xp::followerGain(11, 2) == 11);
+		assert(quality::xp::followerGain(11, 3) == 10);
 		assert(quality::xp::followerGain(11, 4) == 9);
 		assert(quality::xp::followerGain(1, 4) == 0);
 		assert(quality::xp::scale(INT_MAX, 150) == INT_MAX);
@@ -70,7 +70,7 @@ namespace
 		};
 		const auto awards = quality::xp::routeFollowers(2, bases, followers);
 		assert(awards.size() == 2);
-		assert(awards[0].key == 101 && awards[0].baseGain == 11);
+		assert(awards[0].key == 101 && awards[0].baseGain == 10);
 		assert(awards[1].key == 202 && awards[1].baseGain == 15);
 	}
 
@@ -89,9 +89,9 @@ namespace
 		};
 		const auto awards = quality::xp::routeFollowers(4, bases, followers);
 		assert(awards.size() == 2);
-		assert(awards[0].key == 101 && awards[0].gain == 87);
-		assert(awards[1].key == 202 && awards[1].baseGain == 70
-			&& awards[1].gain == 87);
+		assert(awards[0].key == 101 && awards[0].gain == 84);
+		assert(awards[1].key == 202 && awards[1].baseGain == 67
+			&& awards[1].gain == 83);
 	}
 
 	void testRevealEligibility()

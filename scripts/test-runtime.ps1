@@ -51,14 +51,19 @@ if ($LASTEXITCODE -ne 6) {
     throw "Missing runtime rejection returned $LASTEXITCODE instead of 6."
 }
 
-Write-Host 'Checking DLL injection and EXP signatures in a suspended process...'
+Write-Host 'Checking DLL injection and combined runtime signatures in a suspended process...'
 & $Launcher '--game-dir' $GameDir '--runtime-dll' $Runtime '--test-injection'
 if ($LASTEXITCODE -ne 0) { throw 'The suspended-process injection test failed.' }
 
-Write-Host 'Checking unsupported in-memory EXP signature rejection...'
+Write-Host 'Checking unsupported in-memory runtime signature rejection...'
 & $Launcher '--game-dir' $GameDir '--runtime-dll' $Runtime `
     '--test-signature-rejection'
-if ($LASTEXITCODE -ne 0) { throw 'The runtime accepted an unsupported EXP signature.' }
+if ($LASTEXITCODE -ne 0) { throw 'The runtime accepted an unsupported signature.' }
+
+Write-Host 'Checking unsupported in-memory minimap signature rejection...'
+& $Launcher '--game-dir' $GameDir '--runtime-dll' $Runtime `
+    '--test-minimap-signature-rejection'
+if ($LASTEXITCODE -ne 0) { throw 'The runtime accepted an unsupported minimap signature.' }
 
 $AfterHash = (Get-FileHash -LiteralPath $GameExe -Algorithm SHA256).Hash
 if ($AfterHash -ne $BeforeHash) {

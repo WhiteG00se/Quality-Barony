@@ -12,7 +12,7 @@ $ToolchainUri = 'https://github.com/mstorsjo/llvm-mingw/releases/download/202606
 $ToolchainHash = 'B9B68A4D276E16FA25802AABA458E4638F64B3884C290AACCDC2D87083B6CA35'
 $SourceRoot = Join-Path $ProjectRoot 'source'
 $Distribution = Join-Path $ProjectRoot 'distributable'
-$TestExecutable = Join-Path $LocalRoot 'QualityBaronyXpTests.exe'
+$TestExecutable = Join-Path $LocalRoot 'QualityBaronyTests.exe'
 
 New-Item -ItemType Directory -Force -Path $LocalRoot | Out-Null
 if (-not (Test-Path -LiteralPath $Compiler -PathType Leaf)) {
@@ -32,7 +32,7 @@ if (-not (Test-Path -LiteralPath $Compiler -PathType Leaf)) {
 
 $Common = @('-std=c++17', '-O2', '-Wall', '-Wextra', '-Wpedantic', '-Werror', '-static')
 
-Write-Host 'Building and running Quality EXP unit tests...'
+Write-Host 'Building and running Quality runtime unit tests...'
 & $Compiler @Common `
     (Join-Path $SourceRoot 'tests\xp_tests.cpp') `
     '-o' $TestExecutable
@@ -44,6 +44,8 @@ Write-Host 'Building QualityBarony.dll directly into distributable...'
 & $Compiler @Common '-DNDEBUG' '-shared' `
     (Join-Path $SourceRoot 'quality\dll_main.cpp') `
     (Join-Path $SourceRoot 'quality\quality_runtime.cpp') `
+    (Join-Path $SourceRoot 'quality\minimap_runtime.cpp') `
+    '-lopengl32' `
     '-o' (Join-Path $Distribution 'QualityBarony.dll')
 if ($LASTEXITCODE -ne 0) { throw 'Quality runtime DLL build failed.' }
 

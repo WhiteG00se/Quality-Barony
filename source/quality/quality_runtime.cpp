@@ -10,6 +10,8 @@
 #include <vector>
 
 #include "runtime_layout.hpp"
+#include "runtime_patch.hpp"
+#include "minimap_runtime.hpp"
 #include "xp.hpp"
 
 namespace
@@ -45,14 +47,7 @@ namespace
 		int owner = -1;
 	};
 
-	struct Patch
-	{
-		std::uintptr_t rva = 0;
-		std::vector<std::uint8_t> expected;
-		std::vector<std::uint8_t> replacement;
-		std::vector<std::uint8_t> original;
-		bool applied = false;
-	};
+	using Patch = quality::runtime::Patch;
 
 	using AwardXpFn = void (*)(std::uint8_t*, std::uint8_t*, bool, bool);
 	using EntityMethodFn = void* (*)(std::uint8_t*);
@@ -500,6 +495,7 @@ namespace
 			VirtualFree(relayPage, 0, MEM_RELEASE);
 			relayPage = nullptr;
 		}
+		quality::minimap_runtime::release();
 	}
 
 	template <std::size_t Size>
@@ -672,6 +668,12 @@ namespace
 		mainJump.resize(layout::xpMainBlockSignature.size(), 0x90);
 		addPatch(layout::xpMainBlockRva,
 			layout::xpMainBlockSignature, std::move(mainJump));
+		if ( !quality::minimap_runtime::prepare(base, patches) )
+		{
+			debug("Minimap appearance hook preparation failed");
+			releaseAllocations();
+			return false;
+		}
 
 		for ( const auto& patch : patches )
 		{
@@ -696,7 +698,7 @@ namespace
 			}
 		}
 
-		debug("Quality EXP runtime installed for Barony v5.0.2");
+		debug("Quality EXP and minimap appearance runtime installed for Barony v5.0.2");
 		return true;
 	}
 }

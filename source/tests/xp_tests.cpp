@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "../quality/xp.hpp"
+#include "../quality/minimap.hpp"
 
 namespace
 {
@@ -93,11 +94,54 @@ namespace
 
 int main()
 {
+	static_assert(quality::minimap::dimension == 512);
+	static_assert(quality::minimap::tileIndex(17, 9) == 4625);
+	static_assert(quality::minimap::white == 0xFFFFFFFFU);
+	static_assert(quality::minimap::stationBlue == 0xFFFFDC8CU);
+	static_assert(quality::minimap::minotaurRed == 0xFF0000FFU);
+	static_assert(quality::minimap::shadowGray == 0xFFBFBFBFU);
+	static_assert(quality::minimap::followerGhostScale == 0.7);
+	static_assert(quality::minimap::ownerColor(2, 2)
+		== quality::minimap::white);
+	static_assert(quality::minimap::ownerColor(0, 2)
+		== quality::minimap::playerGreen);
+	static_assert(quality::minimap::ownerColor(1, 2)
+		== quality::minimap::playerRed);
+	static_assert(quality::minimap::ownerColor(3, 2)
+		== quality::minimap::playerPink);
+	static_assert(quality::minimap::ordinarilyExplored(1));
+	static_assert(quality::minimap::ordinarilyExplored(2));
+	static_assert(!quality::minimap::ordinarilyExplored(3));
+	static_assert(quality::minimap::exitVisible(1, 0, false));
+	static_assert(quality::minimap::exitVisible(3, 0, false));
+	static_assert(quality::minimap::exitVisible(4, 0, true));
+	static_assert(quality::minimap::exitVisible(0, 1, false));
+	static_assert(!quality::minimap::exitVisible(0, 1, true));
+	static_assert(!quality::minimap::exitVisible(0, 0, false));
+	static_assert(quality::minimap::isBoulder(245, false));
+	static_assert(quality::minimap::isBoulder(989, false));
+	static_assert(!quality::minimap::isBoulder(989, true));
+	static_assert(quality::minimap::isExitSprite(161));
+	static_assert(quality::minimap::isExitSprite(256));
+	static_assert(!quality::minimap::isExitSprite(258));
+	static_assert(quality::minimap::isDetectedHostile(0x06000001U));
+	static_assert(!quality::minimap::isDetectedHostile(0x06000000U));
+	static_assert(!quality::minimap::isDetectedHostile(0x05000001U));
+	static_assert(quality::minimap::classifyEntity(0, false, 0, true, false, false)
+		== quality::minimap::MarkerAppearance::Exit);
+	static_assert(quality::minimap::classifyEntity(990, false, 0, false, false, false)
+		== quality::minimap::MarkerAppearance::Boulder);
+	static_assert(quality::minimap::classifyEntity(0, false, 0, false, true, false)
+		== quality::minimap::MarkerAppearance::Workbench);
+	static_assert(quality::minimap::classifyEntity(0, false, 0, false, false, true)
+		== quality::minimap::MarkerAppearance::Cauldron);
+	static_assert(quality::minimap::classifyEntity(0, false, 0x06000001U,
+		false, false, false) == quality::minimap::MarkerAppearance::DetectedHostile);
 	testReadmePercentages();
 	testRoundingAndMinimum();
 	testInspiration();
 	testOwnerSpecificRouting();
 	testEligibilityDeduplicationAndLastHit();
-	std::cout << "Quality EXP unit tests passed\n";
+	std::cout << "Quality runtime unit tests passed\n";
 	return 0;
 }

@@ -24,6 +24,7 @@ namespace
 		"8566DA37BC39EA5A1ED08A8AD57608AF4F019FB415869258FB3C1D310B4419E4";
 	constexpr char initializerName[] = "QualityBaronyInitialize";
 	constexpr std::uintptr_t xpCaptureRva = 0x00457E45;
+	constexpr std::uintptr_t drawMinimapRva = 0x00708070;
 
 	struct FoundProcess
 	{
@@ -527,7 +528,9 @@ namespace
 		return success;
 	}
 
-	bool corruptXpSignatureForTest(const FoundProcess& process, std::wstring& error)
+	bool corruptSignatureForTest(const FoundProcess& process,
+		const std::uintptr_t signatureRva, const wchar_t* signatureName,
+		std::wstring& error)
 	{
 		std::uintptr_t gameBase = remoteModuleBase(process.id, gameExecutableName);
 		if ( !gameBase )
@@ -549,19 +552,21 @@ namespace
 			error = L"Could not locate the suspended Barony module.";
 			return false;
 		}
-		auto* address = reinterpret_cast<void*>(gameBase + xpCaptureRva);
+		auto* address = reinterpret_cast<void*>(gameBase + signatureRva);
 		std::uint8_t original = 0;
 		if ( !ReadProcessMemory(process.handle, address, &original,
 			sizeof(original), nullptr) )
 		{
-			error = L"Could not read the suspended EXP signature: " + windowsError();
+			error = std::wstring(L"Could not read the suspended ") + signatureName
+				+ L" signature: " + windowsError();
 			return false;
 		}
 		DWORD oldProtection = 0;
 		if ( !VirtualProtectEx(process.handle, address, sizeof(original),
 			PAGE_EXECUTE_READWRITE, &oldProtection) )
 		{
-			error = L"Could not unlock the suspended EXP signature: " + windowsError();
+			error = std::wstring(L"Could not unlock the suspended ") + signatureName
+				+ L" signature: " + windowsError();
 			return false;
 		}
 		const std::uint8_t altered = original ^ 1U;
@@ -573,7 +578,8 @@ namespace
 		FlushInstructionCache(process.handle, address, sizeof(original));
 		if ( !written )
 		{
-			error = L"Could not alter the suspended EXP signature: " + windowsError();
+			error = std::wstring(L"Could not alter the suspended ") + signatureName
+				+ L" signature: " + windowsError();
 			return false;
 		}
 		return true;
@@ -583,7 +589,8 @@ namespace
 	{
 		std::wcout << L"Quality Barony Launcher for Barony v5.0.2 x64\n\n"
 			L"Usage: QualityBaronyLauncher.exe [--game-dir PATH] "
-			L"[--verify-only|--test-injection|--test-signature-rejection] "
+			L"[--verify-only|--test-injection|--test-signature-rejection|"
+			L"--test-minimap-signature-rejection] "
 			L"[Barony arguments...]\n"
 			L"Normal startup asks Steam to launch Barony so Steam Cloud tracks the session.\n"
 			L"Set BARONY_GAME_DIR if Steam auto-detection does not find the game.\n";
@@ -597,6 +604,7 @@ int wmain(int argc, wchar_t** argv)
 	bool verifyOnly = false;
 	bool injectionTest = false;
 	bool signatureRejectionTest = false;
+	bool minimapSignatureRejectionTest = false;
 	std::vector<std::wstring> gameArguments;
 	for ( int index = 1; index < argc; ++index )
 	{
@@ -635,6 +643,10 @@ int wmain(int argc, wchar_t** argv)
 		else if ( argument == L"--test-signature-rejection" )
 		{
 			signatureRejectionTest = true;
+		}
+		else if ( argument == L"--test-minimap-signature-rejection" )
+		{
+			minimapSignatureRejectionTest = true;
 		}
 		else if ( argument == L"--" )
 		{
@@ -688,7 +700,7 @@ int wmain(int argc, wchar_t** argv)
 		return 6;
 	}
 
-	if ( injectionTest || signatureRejectionTest )
+	if ( injectionTest || signatureRejectionTest || minimapSignatureRejectionTest )
 	{
 		std::wstring commandLine = quoteArgument(executable.wstring());
 		std::vector<wchar_t> mutableCommand(commandLine.begin(), commandLine.end());
@@ -706,7 +718,14 @@ int wmain(int argc, wchar_t** argv)
 		}
 		const FoundProcess found { process.hProcess, process.dwProcessId };
 		std::wstring error;
-		if ( signatureRejectionTest && !corruptXpSignatureForTest(found, error) )
+		const bool rejectionTest = signatureRejectionTest
+			|| minimapSignatureRejectionTest;
+		const std::uintptr_t corruptRva = minimapSignatureRejectionTest
+			? drawMinimapRva : xpCaptureRva;
+		const wchar_t* corruptName = minimapSignatureRejectionTest
+			? L"minimap" : L"EXP";
+		if ( rejectionTest && !corruptSignatureForTest(found, corruptRva,
+			corruptName, error) )
 		{
 			TerminateProcess(process.hProcess, 200);
 			WaitForSingleObject(process.hProcess, 5000);
@@ -716,7 +735,7 @@ int wmain(int argc, wchar_t** argv)
 			return 8;
 		}
 		const bool injected = injectAndInitialize(found, runtimeDll, error);
-		const bool expectedRejection = signatureRejectionTest && !injected
+		const bool expectedRejection = rejectionTest && !injected
 			&& error.find(L"rejected the process") != std::wstring::npos;
 		TerminateProcess(process.hProcess,
 			(injected || expectedRejection) ? 0 : 200);
@@ -725,7 +744,8 @@ int wmain(int argc, wchar_t** argv)
 		CloseHandle(process.hProcess);
 		if ( expectedRejection )
 		{
-			std::wcout << L"Unsupported in-memory EXP signature was rejected.\n";
+			std::wcout << L"Unsupported in-memory " << corruptName
+				<< L" signature was rejected.\n";
 			return 0;
 		}
 		if ( !injected )
@@ -733,7 +753,7 @@ int wmain(int argc, wchar_t** argv)
 			std::wcerr << L"Error: " << error << L"\n";
 			return 8;
 		}
-		std::wcout << L"DLL injection and all EXP signatures verified.\n";
+		std::wcout << L"DLL injection and all runtime signatures verified.\n";
 		return 0;
 	}
 

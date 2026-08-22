@@ -9,6 +9,7 @@
 #include "../quality/minimap.hpp"
 #include "../quality/minimap_items.hpp"
 #include "../quality/minimap_reveal.hpp"
+#include "../quality/minimap_chests.hpp"
 
 namespace
 {
@@ -370,6 +371,58 @@ namespace
 		assert(items.isPartyDropped(200));
 	}
 
+	void testChestInteractionLifecycle()
+	{
+		using namespace quality::minimap::chests;
+		static_assert(eligibleOrdinary(true, 0));
+		static_assert(!eligibleOrdinary(true, 1));
+		static_assert(!eligibleOrdinary(false, 0));
+		State state;
+		assert(state.observeAuthoritative({{10, 2, 3, 4, false}}).empty());
+		assert(state.markers().empty());
+		assert(state.observeAuthoritative({{10, 2, 3, 4, true}}).empty());
+		assert(!state.interacted(10));
+		assert(state.observeAuthoritative({{10, 2, 3, 3, true}}).size() == 1);
+		assert(state.interacted(10));
+		auto markers = state.markers();
+		assert(markers.size() == 1 && markers[0].uid == 10);
+
+		assert(state.observeAuthoritative({{10, 2, 3, 0, true}}).size() == 1);
+		assert(state.markers().empty());
+		assert(state.interacted(10));
+		assert(state.observeAuthoritative({{10, 2, 3, 2, true}}).size() == 1);
+		assert(state.markers().size() == 1);
+		state.observeAuthoritative({});
+		assert(state.markers().empty());
+		assert(!state.interacted(10));
+	}
+
+	void testChestClosedChangesAndRemoteState()
+	{
+		using namespace quality::minimap::chests;
+		State authoritative;
+		authoritative.observeAuthoritative({{20, 4, 5, 3, false}});
+		assert(authoritative.observeAuthoritative({{20, 4, 5, 2, false}}).empty());
+		assert(!authoritative.interacted(20));
+		authoritative.observeAuthoritative({{20, 4, 5, 2, true}});
+		const auto updates = authoritative.observeAuthoritative({{20, 4, 5, 1, false}});
+		assert(updates.size() == 1 && updates[0].interacted
+			&& updates[0].nonempty);
+
+		State remote;
+		remote.apply(updates[0]);
+		assert(remote.interacted(20));
+		assert(remote.markers().size() == 1);
+		remote.apply({20, 4, 5, true, false});
+		assert(remote.markers().empty());
+		assert(remote.updates().size() == 1);
+		remote.observeLive({{20, 7, 8, 0, false}});
+		const auto snapshot = remote.updates();
+		assert(snapshot[0].x == 7 && snapshot[0].y == 8);
+		remote.reset();
+		assert(remote.updates().empty());
+	}
+
 	void testPartyItemEligibilityAndAuthority()
 	{
 		using quality::minimap::items::eligibleGroundItem;
@@ -447,6 +500,8 @@ int main()
 	testPartyItemStartingDropQueuesAndReset();
 	testPartyItemFingerprintAndRemoteDrop();
 	testFailedPickupKeepsGreenIdentity();
+	testChestInteractionLifecycle();
+	testChestClosedChangesAndRemoteState();
 	testPartyItemEligibilityAndAuthority();
 	std::cout << "Quality runtime unit tests passed\n";
 	return 0;

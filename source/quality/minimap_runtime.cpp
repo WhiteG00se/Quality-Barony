@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <array>
+#include <climits>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -14,6 +15,7 @@
 #include <vector>
 
 #include "minimap.hpp"
+#include "minimap_chests.hpp"
 #include "minimap_items.hpp"
 #include "minimap_reveal.hpp"
 #include "minimap_runtime.hpp"
@@ -93,6 +95,7 @@ namespace
 	constexpr std::size_t entitySprite = 0x140;
 	constexpr std::size_t entitySkill = 0x288;
 	constexpr std::size_t entityFlags = 0x378;
+	constexpr std::size_t entityChildren = 0x3A0;
 	constexpr std::size_t entityParent = 0x3B0;
 	constexpr std::size_t entityBehavior = 0x1350;
 	constexpr std::size_t skillPlayerIndex = 2;
@@ -106,6 +109,8 @@ namespace
 	constexpr std::size_t skillColliderMaxHp = 9;
 	constexpr std::size_t skillColliderCurrentHp = 12;
 	constexpr std::size_t skillColliderContainedEntity = 15;
+	constexpr std::size_t skillChestVoidState = 17;
+	constexpr std::size_t itemCount = 0x0A;
 
 	constexpr std::array<std::uint8_t, 32> drawMinimapSignature = {
 		0x48, 0x8B, 0xC4, 0x48, 0x89, 0x58, 0x18, 0x55,
@@ -308,6 +313,7 @@ namespace
 	std::vector<quality::minimap::reveal::Candidate> revealCandidates;
 	std::array<char, 512> exitTooltipText {};
 	quality::minimap::items::State partyItemState;
+	quality::minimap::chests::State chestState;
 	std::unordered_set<std::uint32_t> seenWorldItems;
 	bool inMinimapDraw = false;
 
@@ -406,6 +412,7 @@ namespace
 		ItemPickedUp = 5,
 		ItemDropped = 6,
 		ItemRemoved = 7,
+		ChestState = 8,
 	};
 
 	struct ItemPacketPayload
@@ -485,7 +492,7 @@ namespace
 	{
 		std::array<std::uint8_t, packetSize> bytes {};
 		bytes[0] = 'Q'; bytes[1] = 'M'; bytes[2] = 'R'; bytes[3] = 'F';
-		bytes[4] = 2;
+		bytes[4] = 3;
 		bytes[5] = static_cast<std::uint8_t>(kind);
 		bytes[6] = *reinterpret_cast<std::uint8_t*>(base + secretLevelRva) ? 1 : 0;
 		writeU32(bytes.data(), 8, sequence);
@@ -626,6 +633,22 @@ namespace
 		}
 	}
 
+	ItemPacketPayload chestPayload(const quality::minimap::chests::Update& update)
+	{
+		return {update.uid, 0,
+			(update.interacted ? 1U : 0U) | (update.nonempty ? 2U : 0U),
+			static_cast<std::uint16_t>(std::clamp(update.x, 0, 65535)),
+			static_cast<std::uint16_t>(std::clamp(update.y, 0, 65535))};
+	}
+
+	void broadcastChest(const quality::minimap::chests::Update& update)
+	{
+		if ( multiplayerMode() == 1 )
+		{
+			broadcastToReadyClients(PacketKind::ChestState, chestPayload(update));
+		}
+	}
+
 	void requestTeamRefresh()
 	{
 		refreshRevealSnapshot();
@@ -645,6 +668,7 @@ namespace
 		revealState.reset();
 		revealCandidates.clear();
 		partyItemState.reset();
+		chestState.reset();
 		seenWorldItems.clear();
 		pendingPackets.clear();
 		clientGenerations.clear();
@@ -665,9 +689,9 @@ namespace
 	{
 		return packet && packet->data && packet->len == static_cast<int>(packetSize)
 			&& std::memcmp(packet->data, "QMRF", 4) == 0
-			&& packet->data[4] == 2
+			&& packet->data[4] == 3
 			&& packet->data[5] >= static_cast<std::uint8_t>(PacketKind::Ready)
-			&& packet->data[5] <= static_cast<std::uint8_t>(PacketKind::ItemRemoved);
+			&& packet->data[5] <= static_cast<std::uint8_t>(PacketKind::ChestState);
 	}
 
 	void processQualityPacket(const UdpPacket* packet)
@@ -726,6 +750,11 @@ namespace
 					queueReliable(PacketKind::ItemDropped, packet->address,
 						accepted, itemPayload(marker));
 				}
+				for ( const auto& update : chestState.updates() )
+				{
+					queueReliable(PacketKind::ChestState, packet->address,
+						accepted, chestPayload(update));
+				}
 			}
 			else if ( quality::minimap::reveal::acceptHostRequest(true, true,
 				generation, accepted) )
@@ -736,7 +765,8 @@ namespace
 		}
 		else if ( multiplayerMode() == 2
 			&& (kind == PacketKind::Refresh || kind == PacketKind::ItemPickedUp
-				|| kind == PacketKind::ItemDropped || kind == PacketKind::ItemRemoved)
+				|| kind == PacketKind::ItemDropped || kind == PacketKind::ItemRemoved
+				|| kind == PacketKind::ChestState)
 			&& quality::minimap::reveal::acceptClientRefresh(sameAddress(
 				packet->address, *reinterpret_cast<IpAddress*>(base + netServerRva)),
 				true, generation, localGeneration) )
@@ -752,7 +782,20 @@ namespace
 					readU32(packet->data, 40), readU16(packet->data, 44),
 					readU16(packet->data, 46),
 				};
-				if ( kind == PacketKind::ItemDropped )
+				if ( kind == PacketKind::ChestState )
+				{
+					const std::uint32_t flags = payload.inventoryKey;
+					const quality::minimap::chests::Update update {
+						payload.markerId, payload.x, payload.y,
+						(flags & 1U) != 0, (flags & 2U) != 0,
+					};
+					chestState.apply(update);
+					if ( update.interacted )
+					{
+						revealState.markUsed(update.uid);
+					}
+				}
+				else if ( kind == PacketKind::ItemDropped )
 				{
 					partyItemState.applyDrop(payload.markerId, payload.entityUid,
 						payload.inventoryKey, payload.x, payload.y);
@@ -915,6 +958,75 @@ namespace
 			}
 		}
 		return candidates;
+	}
+
+	std::vector<quality::minimap::chests::Observation> collectChestObservations(
+		List* entities, const bool inspectInventories)
+	{
+		using quality::minimap::chests::Observation;
+		std::vector<Observation> observations;
+		if ( !entities )
+		{
+			return observations;
+		}
+		for ( Node* node = entities->first; node; node = node->next )
+		{
+			auto* entity = static_cast<std::uint8_t*>(node->element);
+			if ( !entity )
+			{
+				continue;
+			}
+			const int sprite = field<std::int32_t>(entity, entitySprite);
+			if ( !quality::minimap::chests::eligibleOrdinary(
+				sprite == 188 || sprite == 1791,
+				skill(entity, skillChestVoidState)) )
+			{
+				continue;
+			}
+			Observation observation;
+			observation.uid = uid(entity);
+			observation.x = static_cast<int>(std::floor(
+				field<double>(entity, entityX) / 16.0));
+			observation.y = static_cast<int>(std::floor(
+				field<double>(entity, entityY) / 16.0));
+			observation.open = skill(entity, 1) == 1;
+			if ( inspectInventories )
+			{
+				const auto& children = field<List>(entity, entityChildren);
+				auto* inventory = children.first && children.first->element
+					? static_cast<List*>(children.first->element) : nullptr;
+				std::int64_t total = 0;
+				for ( Node* itemNode = inventory ? inventory->first : nullptr;
+					itemNode; itemNode = itemNode->next )
+				{
+					auto* item = static_cast<std::uint8_t*>(itemNode->element);
+					if ( item )
+					{
+						total += std::max<int>(0, field<std::int16_t>(item, itemCount));
+					}
+				}
+				observation.itemCount = static_cast<int>(std::min<std::int64_t>(
+					total, static_cast<std::int64_t>(INT_MAX)));
+			}
+			observations.push_back(observation);
+		}
+		return observations;
+	}
+
+	void observeChests(List* entities)
+	{
+		const bool authoritative = multiplayerMode() != 2;
+		const auto observations = collectChestObservations(entities, authoritative);
+		if ( !authoritative )
+		{
+			chestState.observeLive(observations);
+			return;
+		}
+		for ( const auto& update : chestState.observeAuthoritative(observations) )
+		{
+			revealState.markUsed(update.uid);
+			broadcastChest(update);
+		}
 	}
 
 	void refreshRevealSnapshot()
@@ -1303,6 +1415,7 @@ namespace
 			}
 		}
 		observePartyItems(entities, partyUids, partyEntities);
+		observeChests(entities);
 		revealCandidates = collectRevealCandidates(entities, partyUids);
 		revealState.observeLive(revealCandidates);
 		flushPendingPackets();
@@ -1774,6 +1887,13 @@ namespace
 		for ( const auto& item : partyItemState.markers() )
 		{
 			const auto marker = transform(item.x + .5, item.y + .5, scope);
+			circle(marker.x, marker.y,
+				std::min(marker.unitX, marker.unitY) * .5f,
+				quality::minimap::interactedBlue, true);
+		}
+		for ( const auto& chest : chestState.markers() )
+		{
+			const auto marker = transform(chest.x + .5, chest.y + .5, scope);
 			circle(marker.x, marker.y,
 				std::min(marker.unitX, marker.unitY) * .5f,
 				quality::minimap::interactedBlue, true);

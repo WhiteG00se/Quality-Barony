@@ -16,17 +16,17 @@
 <details>
 <summary><strong>EXP Multipliers</strong></summary>
 
-| EXP Receiver | Condition | Solo | 2 Players | 3 Players | 4 Players |
-|---|---|---:|---:|---:|---:|
-| Ordinary follower | Other player gets last hit | — | 100% | 90% | 80% |
-| Ordinary follower | Owner player gets last hit | 125% | 100% | 90% | 80% |
-| Ordinary follower | Follower gets last hit | 125% | 100% | 90% | 80% |
-| Conjurer summon | Other player gets last hit | — | 100% | 90% | 80% |
-| Conjurer summon | Owner player gets last hit | 125% | 100% | 90% | 80% |
-| Conjurer summon | Summon gets last hit | 125% | 100% | 90% | 80% |
-| Player | Player gets last hit | 100% | 90% | 80% | 70% |
-| Player | Any follower gets last hit | 100% | 90% | 80% | 70% |
-| Player | Other player gets last hit | — | 90% | 80% | 70% |
+| EXP Receiver | Range | Solo | 2 players | 3 players | 4 players |
+|---|---:|---:|---:|---:|---:|
+| Ordinary follower<br>(other player last hits) | ~~\~6,250 tiles~~<br>`Global` | — | ~~0%~~<br>`100%` | ~~0%~~<br>`90%` | ~~0%~~<br>`80%` |
+| Ordinary follower<br>(its player last hits) | ~~\~6,250 tiles~~<br>`Global` | ~~100%~~<br>`125%` | ~~90%~~<br>`100%` | ~~80%~~<br>`90%` | ~~70%~~<br>`80%` |
+| Ordinary follower<br>(it last hits) | ~~\~6,250 tiles~~<br>`Global` | ~~200%~~<br>`125%` | ~~190%~~<br>`100%` | ~~180%~~<br>`90%` | ~~170%~~<br>`80%` |
+| Conjurer summon<br>(other player last hits) | ~~\~6,250 tiles~~<br>`Global` | — | ~~0%~~<br>`100%` | ~~0%~~<br>`90%` | ~~0%~~<br>`80%` |
+| Conjurer summon<br>(its player last hits) | ~~\~6,250 tiles~~<br>`Global` | ~~100%~~<br>`125%` | ~~100%~~<br>`100%` | ~~100%~~<br>`90%` | ~~100%~~<br>`80%` |
+| Conjurer summon<br>(it last hits) | ~~\~6,250 tiles~~<br>`Global` | ~~200%~~<br>`125%` | ~~200%~~<br>`100%` | ~~200%~~<br>`90%` | ~~200%~~<br>`80%` |
+| Player (last hits) | Global | 100% | 90% | 80% | 70% |
+| Player (any follower last hits) | Global | 100% | 90% | 80% | 70% |
+| Player (other player last hits) | Global | — | 90% | 80% | 70% |
 
 Player shares have a 3-EXP minimum. Follower gains use integer rounding without a minimum.
 

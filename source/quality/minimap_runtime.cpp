@@ -871,9 +871,12 @@ namespace
 				const auto originalOwner = static_cast<std::uint32_t>(
 					skill(entity, skillItemOriginalOwner));
 				const auto parent = field<std::uint32_t>(entity, entityParent);
-				candidate.playerOwned = partyUids.count(originalOwner) != 0
-					|| partyUids.count(parent) != 0
-					|| partyItemState.isPartyDropped(entityUid);
+				const bool continuedGreenItem =
+					partyItemState.isTrackedOrdinary(entityUid);
+				candidate.playerOwned = !continuedGreenItem
+					&& (partyUids.count(originalOwner) != 0
+						|| partyUids.count(parent) != 0
+						|| partyItemState.isPartyDropped(entityUid));
 				candidate.lootBag = sprite >= lootBagIndex
 					&& sprite < lootBagIndex + lootBagVariations;
 			}
@@ -988,6 +991,15 @@ namespace
 		}
 		const bool authoritative = quality::minimap::items::locallyAuthoritative(
 			multiplayerMode());
+		struct ItemObservation
+		{
+			std::uint32_t uid;
+			std::uint32_t inventoryKey;
+			int x;
+			int y;
+			bool partyOwned;
+		};
+		std::vector<ItemObservation> observations;
 		std::unordered_set<std::uint32_t> liveItems;
 		const int lootBagIndex = *reinterpret_cast<int*>(
 			base + lootBagSpriteIndexRva);
@@ -1016,39 +1028,87 @@ namespace
 			const int tileY = static_cast<int>(std::floor(
 				field<double>(entity, entityY) / 16.0));
 			liveItems.insert(entityUid);
-			if ( !authoritative )
-			{
-				const auto* record = partyItemState.find(entityUid);
-				if ( record )
-				{
-					partyItemState.observe(entityUid, inventoryKey, tileX, tileY,
-						record->partyDropped);
-				}
-				continue;
-			}
 			const auto originalOwner = static_cast<std::uint32_t>(
 				skill(entity, skillItemOriginalOwner));
 			const auto parent = field<std::uint32_t>(entity, entityParent);
 			const bool partyDropped = partyUids.count(originalOwner) != 0
 				|| partyUids.count(parent) != 0;
-			const bool wasPartyDropped = partyItemState.isPartyDropped(entityUid);
-			partyItemState.observe(entityUid, inventoryKey, tileX, tileY,
-				partyDropped);
-			if ( partyDropped && !wasPartyDropped )
+			observations.push_back({entityUid, inventoryKey, tileX, tileY,
+				partyDropped});
+			const auto* existing = partyItemState.find(entityUid);
+			if ( existing )
 			{
-				const auto* record = partyItemState.find(entityUid);
-				if ( record )
+				partyItemState.observe(entityUid, inventoryKey, tileX, tileY,
+					existing->partyDropped);
+			}
+			else if ( !partyDropped )
+			{
+				partyItemState.observe(entityUid, inventoryKey, tileX, tileY, false);
+			}
+		}
+
+		std::unordered_set<std::uint32_t> reboundOldItems;
+		std::unordered_set<std::uint32_t> reboundNewItems;
+		for ( const auto oldUid : seenWorldItems )
+		{
+			if ( liveItems.count(oldUid) || !revealState.contains(oldUid) )
+			{
+				continue;
+			}
+			const auto* oldRecord = partyItemState.find(oldUid);
+			if ( !oldRecord || oldRecord->partyDropped )
+			{
+				continue;
+			}
+			for ( const auto& observation : observations )
+			{
+				if ( !observation.partyOwned
+					|| partyItemState.find(observation.uid)
+					|| reboundNewItems.count(observation.uid)
+					|| observation.inventoryKey
+						!= oldRecord->marker.inventoryKey )
 				{
-					broadcastItem(PacketKind::ItemDropped, record->marker);
+					continue;
 				}
+				const int dx = observation.x - oldRecord->marker.x;
+				const int dy = observation.y - oldRecord->marker.y;
+				if ( dx * dx + dy * dy > 25 )
+				{
+					continue;
+				}
+				if ( partyItemState.rebindOrdinary(oldUid, observation.uid,
+					observation.inventoryKey, observation.x, observation.y) )
+				{
+					revealState.rebind(oldUid, observation.uid,
+						observation.x, observation.y);
+					reboundOldItems.insert(oldUid);
+					reboundNewItems.insert(observation.uid);
+				}
+				break;
 			}
 		}
 
 		if ( authoritative )
 		{
+			for ( const auto& observation : observations )
+			{
+				if ( !observation.partyOwned
+					|| reboundNewItems.count(observation.uid)
+					|| partyItemState.find(observation.uid) )
+				{
+					continue;
+				}
+				partyItemState.observe(observation.uid, observation.inventoryKey,
+					observation.x, observation.y, true);
+				const auto* record = partyItemState.find(observation.uid);
+				if ( record )
+				{
+					broadcastItem(PacketKind::ItemDropped, record->marker);
+				}
+			}
 			for ( const auto oldUid : seenWorldItems )
 			{
-				if ( liveItems.count(oldUid) )
+				if ( liveItems.count(oldUid) || reboundOldItems.count(oldUid) )
 				{
 					continue;
 				}
@@ -1088,8 +1148,23 @@ namespace
 					partyItemState.remove(oldUid);
 				}
 			}
-			seenWorldItems = std::move(liveItems);
 		}
+		else
+		{
+			for ( const auto oldUid : seenWorldItems )
+			{
+				if ( liveItems.count(oldUid) || reboundOldItems.count(oldUid) )
+				{
+					continue;
+				}
+				const auto* record = partyItemState.find(oldUid);
+				if ( record && !record->partyDropped )
+				{
+					partyItemState.remove(oldUid);
+				}
+			}
+		}
+		seenWorldItems = std::move(liveItems);
 	}
 
 	void observeWorld()

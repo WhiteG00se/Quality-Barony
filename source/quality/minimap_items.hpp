@@ -138,6 +138,32 @@ namespace quality::minimap::items
 			return found != records_.end() && found->second.partyDropped;
 		}
 
+		bool isTrackedOrdinary(const std::uint32_t entityUid) const
+		{
+			const auto found = records_.find(entityUid);
+			return found != records_.end() && !found->second.partyDropped;
+		}
+
+		bool rebindOrdinary(const std::uint32_t oldEntityUid,
+			const std::uint32_t newEntityUid, const std::uint32_t inventoryKey,
+			const int x, const int y)
+		{
+			const auto found = records_.find(oldEntityUid);
+			if ( found == records_.end() || found->second.partyDropped
+				|| newEntityUid == 0 )
+			{
+				return false;
+			}
+			Record replacement = found->second;
+			replacement.marker.entityUid = newEntityUid;
+			replacement.marker.inventoryKey = inventoryKey;
+			replacement.marker.x = x;
+			replacement.marker.y = y;
+			records_.erase(found);
+			records_[newEntityUid] = replacement;
+			return true;
+		}
+
 		const Record* find(const std::uint32_t entityUid) const
 		{
 			const auto found = records_.find(entityUid);

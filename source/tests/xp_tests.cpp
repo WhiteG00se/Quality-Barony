@@ -281,6 +281,31 @@ namespace
 		assert(state.markers().empty());
 	}
 
+	void testFailedPickupKeepsGreenIdentity()
+	{
+		quality::minimap::items::State items;
+		quality::minimap::reveal::State reveal;
+		constexpr std::uint32_t key = 77;
+		items.observe(100, key, 4, 5, false);
+		reveal.refresh({{100, 4, 5,
+			quality::minimap::reveal::CandidateKind::Item}});
+		assert(items.isTrackedOrdinary(100));
+		assert(items.rebindOrdinary(100, 101, key, 5, 5));
+		assert(reveal.rebind(100, 101, 5, 5));
+		assert(!items.isPartyDropped(101));
+		assert(items.isTrackedOrdinary(101));
+		assert(items.markers().empty());
+		assert(!reveal.contains(100));
+		assert(reveal.contains(101));
+		const auto markers = reveal.markers();
+		assert(markers.size() == 1 && markers[0].uid == 101);
+		assert(markers[0].x == 5 && markers[0].y == 5);
+
+		items.observe(200, key, 1, 1, true);
+		assert(!items.rebindOrdinary(200, 201, key, 1, 1));
+		assert(items.isPartyDropped(200));
+	}
+
 	void testPartyItemEligibilityAndAuthority()
 	{
 		using quality::minimap::items::eligibleGroundItem;
@@ -356,6 +381,7 @@ int main()
 	testPartyItemPickupDropIdentity();
 	testPartyItemStartingDropQueuesAndReset();
 	testPartyItemFingerprintAndRemoteDrop();
+	testFailedPickupKeepsGreenIdentity();
 	testPartyItemEligibilityAndAuthority();
 	std::cout << "Quality runtime unit tests passed\n";
 	return 0;

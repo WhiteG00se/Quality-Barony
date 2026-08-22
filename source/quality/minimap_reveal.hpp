@@ -225,6 +225,23 @@ namespace quality::minimap::reveal
 			return markers_.count(uid) != 0;
 		}
 
+		bool rebind(const std::uint32_t oldUid, const std::uint32_t newUid,
+			const int x, const int y)
+		{
+			const auto found = markers_.find(oldUid);
+			if ( found == markers_.end() || newUid == 0 )
+			{
+				return false;
+			}
+			Marker replacement = found->second;
+			replacement.uid = newUid;
+			replacement.x = x;
+			replacement.y = y;
+			markers_.erase(found);
+			markers_[newUid] = replacement;
+			return true;
+		}
+
 		bool active() const { return active_; }
 
 		std::vector<Marker> markers() const

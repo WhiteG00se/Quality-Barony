@@ -65,6 +65,11 @@ Write-Host 'Checking unsupported in-memory minimap signature rejection...'
     '--test-minimap-signature-rejection'
 if ($LASTEXITCODE -ne 0) { throw 'The runtime accepted an unsupported minimap signature.' }
 
+Write-Host 'Checking unsupported in-memory exit-reveal signature rejection...'
+& $Launcher '--game-dir' $GameDir '--runtime-dll' $Runtime `
+    '--test-reveal-signature-rejection'
+if ($LASTEXITCODE -ne 0) { throw 'The runtime accepted an unsupported exit-reveal signature.' }
+
 $AfterHash = (Get-FileHash -LiteralPath $GameExe -Algorithm SHA256).Hash
 if ($AfterHash -ne $BeforeHash) {
     throw 'The installed barony.exe changed during runtime testing.'

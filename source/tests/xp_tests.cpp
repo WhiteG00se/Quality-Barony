@@ -7,6 +7,7 @@
 
 #include "../quality/xp.hpp"
 #include "../quality/minimap.hpp"
+#include "../quality/minimap_reveal.hpp"
 
 namespace
 {
@@ -90,6 +91,100 @@ namespace
 		assert(awards[1].key == 202 && awards[1].baseGain == 72
 			&& awards[1].gain == 90);
 	}
+
+	void testRevealEligibility()
+	{
+		using namespace quality::minimap::reveal;
+		Candidate candidate { 1, 2, 3, CandidateKind::Chest };
+		assert(eligible(candidate, false));
+		assert(!eligible(candidate, true));
+		candidate.kind = CandidateKind::Grave;
+		assert(eligible(candidate, false));
+		candidate.kind = CandidateKind::Fountain;
+		candidate.available = false;
+		assert(!eligible(candidate, false));
+		candidate.kind = CandidateKind::BreakableContainer;
+		candidate.available = true;
+		assert(!eligible(candidate, false));
+		candidate.hasLoot = true;
+		assert(eligible(candidate, false));
+		candidate.kind = CandidateKind::Item;
+		candidate.hasLoot = false;
+		assert(eligible(candidate, false));
+		candidate.playerOwned = true;
+		assert(!eligible(candidate, false));
+		candidate.playerOwned = false;
+		candidate.lootBag = true;
+		assert(!eligible(candidate, false));
+		candidate.kind = CandidateKind::None;
+		candidate.lootBag = false;
+		assert(!eligible(candidate, false));
+	}
+
+	void testRefreshableSnapshot()
+	{
+		using namespace quality::minimap::reveal;
+		State state;
+		state.reset();
+		state.rememberInitialUses(10, 2);
+		state.refresh({
+			{10, 1, 1, CandidateKind::Fountain},
+			{20, 2, 2, CandidateKind::Item},
+			{30, 3, 3, CandidateKind::Exit},
+		});
+		assert(state.active());
+		assert(state.contains(10));
+		assert(state.contains(20));
+		assert(state.contains(30));
+
+		state.observeLive({
+			{10, 4, 5, CandidateKind::Fountain},
+			{30, 3, 3, CandidateKind::Exit},
+			{40, 4, 4, CandidateKind::Item},
+		});
+		assert(state.contains(10));
+		assert(!state.contains(20));
+		assert(!state.contains(40));
+		const auto markers = state.markers();
+		assert(markers[0].uid == 10 && markers[0].x == 4 && markers[0].y == 5);
+
+		state.observeUses(10, 1);
+		assert(!state.contains(10));
+		state.refresh({
+			{10, 1, 1, CandidateKind::Fountain},
+			{40, 4, 4, CandidateKind::Item},
+		});
+		assert(!state.contains(10));
+		assert(state.contains(40));
+		state.reset();
+		assert(!state.active());
+		assert(state.markers().empty());
+	}
+
+	void testTooltipDebounce()
+	{
+		quality::minimap::reveal::State state;
+		state.reset();
+		assert(state.tooltipEdge(100));
+		assert(!state.tooltipEdge(100));
+		assert(!state.tooltipEdge(101));
+		assert(!state.tooltipEdge(110));
+		assert(state.tooltipEdge(121));
+	}
+
+	void testRevealSynchronizationGates()
+	{
+		using quality::minimap::reveal::acceptClientRefresh;
+		using quality::minimap::reveal::acceptHostRequest;
+		assert(acceptHostRequest(true, true, 4, 4));
+		assert(!acceptHostRequest(false, true, 4, 4));
+		assert(!acceptHostRequest(true, false, 4, 4));
+		assert(!acceptHostRequest(true, true, 3, 4));
+		assert(acceptClientRefresh(true, true, 8, 8));
+		assert(!acceptClientRefresh(false, true, 8, 8));
+		assert(!acceptClientRefresh(true, false, 8, 8));
+		assert(!acceptClientRefresh(true, true, 7, 8));
+	}
 }
 
 int main()
@@ -100,6 +195,7 @@ int main()
 	static_assert(quality::minimap::stationBlue == 0xFFFFDC8CU);
 	static_assert(quality::minimap::minotaurRed == 0xFF0000FFU);
 	static_assert(quality::minimap::shadowGray == 0xFFBFBFBFU);
+	static_assert(quality::minimap::uninteractedGreen == 0xFF2F6B55U);
 	static_assert(quality::minimap::followerGhostScale == 0.7);
 	static_assert(quality::minimap::ownerColor(2, 2)
 		== quality::minimap::white);
@@ -142,6 +238,10 @@ int main()
 	testInspiration();
 	testOwnerSpecificRouting();
 	testEligibilityDeduplicationAndLastHit();
+	testRevealEligibility();
+	testRefreshableSnapshot();
+	testTooltipDebounce();
+	testRevealSynchronizationGates();
 	std::cout << "Quality runtime unit tests passed\n";
 	return 0;
 }

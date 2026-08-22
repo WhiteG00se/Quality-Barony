@@ -8,11 +8,13 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 #include <vector>
 
 #include "minimap.hpp"
+#include "minimap_reveal.hpp"
 #include "minimap_runtime.hpp"
 
 namespace
@@ -26,8 +28,14 @@ namespace
 	constexpr std::uintptr_t drawTriangleRva = 0x007073F0;
 	constexpr std::uintptr_t playerColorRva = 0x0086F6D0;
 	constexpr std::uintptr_t playSoundRva = 0x00652800;
+	constexpr std::uintptr_t loadMapRva = 0x004A7F10;
+	constexpr std::uintptr_t languageGetRva = 0x004D37B0;
+	constexpr std::uintptr_t createDialogueRva = 0x00840370;
 	constexpr std::uintptr_t actPlayerRva = 0x00355FE0;
 	constexpr std::uintptr_t actMonsterRva = 0x0032D4D0;
+	constexpr std::uintptr_t actItemRva = 0x0031B480;
+	constexpr std::uintptr_t actGoldBagRva = 0x0030D5B0;
+	constexpr std::uintptr_t actColliderDecorationRva = 0x002F1A80;
 	constexpr std::uintptr_t actCustomPortalRva = 0x0031F210;
 	constexpr std::uintptr_t actWorkbenchRva = 0x002E2050;
 	constexpr std::uintptr_t actCauldronRva = 0x002E14D0;
@@ -36,6 +44,11 @@ namespace
 	constexpr std::uintptr_t pingColorBlockRva = 0x0070A609;
 	constexpr std::uintptr_t pingColorBlockReturnRva = 0x0070A620;
 	constexpr std::uintptr_t calloutColorCallRva = 0x0070AE75;
+	constexpr std::uintptr_t exitTooltipLadderCallRva = 0x005F451B;
+	constexpr std::uintptr_t exitTooltipPortalCallRva = 0x005F4597;
+	constexpr std::array<std::uintptr_t, 4> headstoneDialogueCallRvas = {
+		0x0030E1C2, 0x0030E2CD, 0x0030E3DA, 0x0030E4F8,
+	};
 	constexpr std::array<std::uintptr_t, 4> ghostColorCallRvas = {
 		0x0070B58A, 0x0070B667, 0x0070B738, 0x0070B809,
 	};
@@ -51,6 +64,19 @@ namespace
 	constexpr std::uintptr_t virtualScreenXPointerRva = 0x00BFEC60;
 	constexpr std::uintptr_t virtualScreenYPointerRva = 0x00BFEC68;
 	constexpr std::uintptr_t colorblindLobbyRva = 0x00ED1BA5;
+	constexpr std::uintptr_t lootBagSpriteIndexRva = 0x01001DA0;
+	constexpr std::uintptr_t lootBagSpriteVariationsRva = 0x01001DAC;
+	constexpr std::uintptr_t multiplayerRva = 0x010538F4;
+	constexpr std::uintptr_t clientDisconnectedRva = 0x01053908;
+	constexpr std::uintptr_t currentLevelRva = 0x01053278;
+	constexpr std::uintptr_t mapSeedRva = 0x01050740;
+	constexpr std::uintptr_t secretLevelRva = 0x01050745;
+	constexpr std::uintptr_t netServerRva = 0x0100F270;
+	constexpr std::uintptr_t netClientsPointerRva = 0x0100F278;
+	constexpr std::uintptr_t netSocketRva = 0x0100F280;
+	constexpr std::uintptr_t udpRecvIatRva = 0x00ACCD58;
+	constexpr std::uintptr_t udpSendIatRva = 0x00ACCD60;
+	constexpr std::uintptr_t mapRva = mapWidthRva - 64;
 
 	constexpr std::size_t entityUid = 0x68;
 	constexpr std::size_t entityX = 0xD8;
@@ -59,11 +85,17 @@ namespace
 	constexpr std::size_t entitySprite = 0x140;
 	constexpr std::size_t entitySkill = 0x288;
 	constexpr std::size_t entityFlags = 0x378;
+	constexpr std::size_t entityParent = 0x3B0;
 	constexpr std::size_t entityBehavior = 0x1350;
 	constexpr std::size_t skillPlayerIndex = 2;
 	constexpr std::size_t skillMonsterAllyIndex = 42;
 	constexpr std::size_t skillShadowTaggedUid = 54;
 	constexpr std::size_t skillShowOnMap = 59;
+	constexpr std::size_t skillItemOriginalOwner = 21;
+	constexpr std::size_t skillItemContainer = 29;
+	constexpr std::size_t skillColliderMaxHp = 9;
+	constexpr std::size_t skillColliderCurrentHp = 12;
+	constexpr std::size_t skillColliderContainedEntity = 15;
 
 	constexpr std::array<std::uint8_t, 32> drawMinimapSignature = {
 		0x48, 0x8B, 0xC4, 0x48, 0x89, 0x58, 0x18, 0x55,
@@ -79,6 +111,32 @@ namespace
 		0x48, 0x89, 0x5C, 0x24, 0x18, 0x48, 0x89, 0x74,
 		0x24, 0x20, 0x57, 0x48, 0x83, 0xEC, 0x50, 0x48,
 	};
+	constexpr std::array<std::uint8_t, 21> loadMapSignature = {
+		0x40, 0x55, 0x53, 0x56, 0x57, 0x41, 0x54, 0x41,
+		0x55, 0x41, 0x56, 0x41, 0x57, 0x48, 0x8D, 0xAC,
+		0x24, 0xC8, 0xFB, 0xFF, 0xFF,
+	};
+	constexpr std::size_t loadMapHookBytes = loadMapSignature.size();
+	constexpr std::array<std::uint8_t, 16> languageGetSignature = {
+		0x89, 0x4C, 0x24, 0x08, 0x48, 0x83, 0xEC, 0x28,
+		0x85, 0xC9, 0x79, 0x0C, 0x48, 0x8D, 0x05, 0x3A,
+	};
+	constexpr std::array<std::uint8_t, 16> createDialogueSignature = {
+		0x48, 0x8B, 0xC4, 0x4C, 0x89, 0x48, 0x20, 0x55,
+		0x53, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41,
+	};
+	constexpr std::array<std::uint8_t, 5> exitTooltipLadderCall = {
+		0xE8, 0x90, 0xF2, 0xED, 0xFF,
+	};
+	constexpr std::array<std::uint8_t, 5> exitTooltipPortalCall = {
+		0xE8, 0x14, 0xF2, 0xED, 0xFF,
+	};
+	constexpr std::array<std::array<std::uint8_t, 5>, 4> headstoneDialogueCalls = {{
+		{0xE8, 0xA9, 0x21, 0x53, 0x00},
+		{0xE8, 0x9E, 0x20, 0x53, 0x00},
+		{0xE8, 0x91, 0x1F, 0x53, 0x00},
+		{0xE8, 0x73, 0x1E, 0x53, 0x00},
+	}};
 	constexpr std::array<std::uint8_t, 5> lootBagColorCall = {
 		0xE8, 0xEE, 0x58, 0x16, 0x00,
 	};
@@ -114,7 +172,7 @@ namespace
 	enum class VisualKind
 	{
 		Exit, Boulder, Workbench, Cauldron, Minotaur, ShadowCreature,
-		DetectedHostile, Player, Follower,
+		DetectedHostile, Player, Follower, Unused,
 	};
 
 	struct Visual
@@ -140,6 +198,22 @@ namespace
 		Rect, std::uint32_t, bool);
 	using PlayerColorFn = std::uint32_t (*)(int, bool, bool);
 	using PlaySoundFn = void (*)(int, int);
+	using LoadMapFn = int (*)(const char*, void*, List*, List*, int*);
+	using LanguageGetFn = const char* (*)(int);
+	using CreateDialogueFn = void (*)(void*, std::uint32_t, int, const char*);
+	using UdpSocket = void*;
+	struct IpAddress { std::uint32_t host; std::uint16_t port; };
+	struct UdpPacket
+	{
+		int channel;
+		std::uint8_t* data;
+		int len;
+		int maxlen;
+		int status;
+		IpAddress address;
+	};
+	using UdpSendFn = int (*)(UdpSocket, int, UdpPacket*);
+	using UdpRecvFn = int (*)(UdpSocket, UdpPacket*);
 	using GlUseProgramFn = void (APIENTRY*)(GLuint);
 	using GlCreateShaderFn = GLuint (APIENTRY*)(GLenum);
 	using GlShaderSourceFn = void (APIENTRY*)(GLuint, GLsizei,
@@ -174,8 +248,14 @@ namespace
 	DrawTriangleFn drawTriangle = nullptr;
 	PlayerColorFn originalPlayerColor = nullptr;
 	PlaySoundFn playSound = nullptr;
+	LoadMapFn originalLoadMap = nullptr;
+	LanguageGetFn languageGet = nullptr;
+	CreateDialogueFn createDialogue = nullptr;
+	UdpSendFn udpSend = nullptr;
+	UdpRecvFn udpRecv = nullptr;
 	void* relayPage = nullptr;
 	void* drawTrampoline = nullptr;
+	void* loadMapTrampoline = nullptr;
 	Rect currentRect {};
 	int currentViewer = 0;
 	std::vector<Visual> visuals;
@@ -183,6 +263,8 @@ namespace
 	std::uintptr_t lastEntityList = 0;
 	std::uint32_t lastTicks = 0;
 	bool minotaurAlerted = false;
+	quality::minimap::reveal::State revealState;
+	std::vector<quality::minimap::reveal::Candidate> revealCandidates;
 
 	GlUseProgramFn useProgram = nullptr;
 	GlCreateShaderFn createShader = nullptr;
@@ -243,6 +325,336 @@ namespace
 		return field<std::uint32_t>(entity, entityUid);
 	}
 
+	std::uint64_t addressKey(const IpAddress address)
+	{
+		return (static_cast<std::uint64_t>(address.host) << 16) | address.port;
+	}
+
+	bool sameAddress(const IpAddress left, const IpAddress right)
+	{
+		return left.host == right.host && left.port == right.port;
+	}
+
+	std::uint8_t* findEntity(const List* entities, const std::uint32_t entityUid)
+	{
+		if ( !entities || entityUid == 0 )
+		{
+			return nullptr;
+		}
+		for ( Node* node = entities->first; node; node = node->next )
+		{
+			auto* entity = static_cast<std::uint8_t*>(node->element);
+			if ( entity && uid(entity) == entityUid )
+			{
+				return entity;
+			}
+		}
+		return nullptr;
+	}
+
+	enum class PacketKind : std::uint8_t
+	{
+		Ready = 1,
+		Request = 2,
+		Refresh = 3,
+		Acknowledgement = 4,
+	};
+
+	constexpr std::size_t packetSize = 32;
+	struct PendingPacket
+	{
+		std::array<std::uint8_t, packetSize> bytes {};
+		IpAddress destination {};
+		std::uint32_t createdTick = 0;
+		std::uint32_t lastSentTick = 0;
+	};
+
+	std::uint32_t localGeneration = 0;
+	std::uint32_t networkSequence = 1;
+	std::unordered_map<std::uint32_t, PendingPacket> pendingPackets;
+	std::unordered_map<std::uint64_t, std::uint32_t> clientGenerations;
+	std::unordered_set<std::uint64_t> appliedPackets;
+	bool flushingPackets = false;
+
+	void writeU32(std::uint8_t* output, const std::size_t offset,
+		const std::uint32_t value)
+	{
+		output[offset] = static_cast<std::uint8_t>(value >> 24);
+		output[offset + 1] = static_cast<std::uint8_t>(value >> 16);
+		output[offset + 2] = static_cast<std::uint8_t>(value >> 8);
+		output[offset + 3] = static_cast<std::uint8_t>(value);
+	}
+
+	std::uint32_t readU32(const std::uint8_t* input, const std::size_t offset)
+	{
+		return (static_cast<std::uint32_t>(input[offset]) << 24)
+			| (static_cast<std::uint32_t>(input[offset + 1]) << 16)
+			| (static_cast<std::uint32_t>(input[offset + 2]) << 8)
+			| static_cast<std::uint32_t>(input[offset + 3]);
+	}
+
+	int multiplayerMode()
+	{
+		return *reinterpret_cast<int*>(base + multiplayerRva);
+	}
+
+	bool floorMatches(const std::uint8_t* bytes)
+	{
+		return static_cast<std::int32_t>(readU32(bytes, 16))
+			== *reinterpret_cast<std::int32_t*>(base + currentLevelRva)
+			&& readU32(bytes, 20) == *reinterpret_cast<std::uint32_t*>(
+				base + mapSeedRva)
+			&& (bytes[6] != 0) == (*reinterpret_cast<std::uint8_t*>(
+				base + secretLevelRva) != 0);
+	}
+
+	std::array<std::uint8_t, packetSize> makePacket(const PacketKind kind,
+		const std::uint32_t sequence, const std::uint32_t acknowledgement,
+		const std::uint32_t generation)
+	{
+		std::array<std::uint8_t, packetSize> bytes {};
+		bytes[0] = 'Q'; bytes[1] = 'M'; bytes[2] = 'R'; bytes[3] = 'F';
+		bytes[4] = 1;
+		bytes[5] = static_cast<std::uint8_t>(kind);
+		bytes[6] = *reinterpret_cast<std::uint8_t*>(base + secretLevelRva) ? 1 : 0;
+		writeU32(bytes.data(), 8, sequence);
+		writeU32(bytes.data(), 12, acknowledgement);
+		writeU32(bytes.data(), 16, static_cast<std::uint32_t>(
+			*reinterpret_cast<std::int32_t*>(base + currentLevelRva)));
+		writeU32(bytes.data(), 20,
+			*reinterpret_cast<std::uint32_t*>(base + mapSeedRva));
+		writeU32(bytes.data(), 24, generation);
+		writeU32(bytes.data(), 28, localGeneration);
+		return bytes;
+	}
+
+	void sendBytes(const std::array<std::uint8_t, packetSize>& bytes,
+		const IpAddress destination)
+	{
+		if ( !udpSend )
+		{
+			return;
+		}
+		UdpSocket socket = *reinterpret_cast<UdpSocket*>(base + netSocketRva);
+		if ( !socket || destination.host == 0 || destination.port == 0 )
+		{
+			return;
+		}
+		UdpPacket packet {};
+		packet.channel = -1;
+		packet.data = const_cast<std::uint8_t*>(bytes.data());
+		packet.len = static_cast<int>(bytes.size());
+		packet.maxlen = packet.len;
+		packet.address = destination;
+		udpSend(socket, -1, &packet);
+	}
+
+	void queueReliable(const PacketKind kind, const IpAddress destination,
+		const std::uint32_t generation)
+	{
+		std::uint32_t sequence = networkSequence++;
+		if ( sequence == 0 )
+		{
+			sequence = networkSequence++;
+		}
+		PendingPacket pending;
+		pending.bytes = makePacket(kind, sequence, 0, generation);
+		pending.destination = destination;
+		pending.createdTick = *reinterpret_cast<std::uint32_t*>(base + ticksRva);
+		pendingPackets[sequence] = pending;
+		sendBytes(pending.bytes, destination);
+		pendingPackets[sequence].lastSentTick = pending.createdTick;
+	}
+
+	void sendAcknowledgement(const IpAddress destination,
+		const std::uint32_t sequence)
+	{
+		sendBytes(makePacket(PacketKind::Acknowledgement, 0, sequence,
+			localGeneration), destination);
+	}
+
+	void flushPendingPackets()
+	{
+		if ( flushingPackets || !base )
+		{
+			return;
+		}
+		flushingPackets = true;
+		const auto now = *reinterpret_cast<std::uint32_t*>(base + ticksRva);
+		for ( auto packet = pendingPackets.begin(); packet != pendingPackets.end(); )
+		{
+			if ( now - packet->second.createdTick > 500U )
+			{
+				packet = pendingPackets.erase(packet);
+				continue;
+			}
+			if ( now - packet->second.lastSentTick >= 15U )
+			{
+				sendBytes(packet->second.bytes, packet->second.destination);
+				packet->second.lastSentTick = now;
+			}
+			++packet;
+		}
+		flushingPackets = false;
+	}
+
+	void refreshRevealSnapshot();
+
+	void broadcastRefresh()
+	{
+		if ( multiplayerMode() != 1 )
+		{
+			return;
+		}
+		auto* clients = *reinterpret_cast<IpAddress**>(base + netClientsPointerRva);
+		const auto* disconnected = base + clientDisconnectedRva;
+		if ( !clients )
+		{
+			return;
+		}
+		for ( int player = 1; player < 4; ++player )
+		{
+			if ( disconnected[player] )
+			{
+				continue;
+			}
+			const IpAddress destination = clients[player - 1];
+			const auto generation = clientGenerations.find(addressKey(destination));
+			if ( generation != clientGenerations.end() )
+			{
+				queueReliable(PacketKind::Refresh, destination, generation->second);
+			}
+		}
+	}
+
+	void requestTeamRefresh()
+	{
+		refreshRevealSnapshot();
+		if ( multiplayerMode() == 2 )
+		{
+			queueReliable(PacketKind::Request,
+				*reinterpret_cast<IpAddress*>(base + netServerRva), localGeneration);
+		}
+		else if ( multiplayerMode() == 1 )
+		{
+			broadcastRefresh();
+		}
+	}
+
+	void resetRevealFloor()
+	{
+		revealState.reset();
+		revealCandidates.clear();
+		pendingPackets.clear();
+		clientGenerations.clear();
+		appliedPackets.clear();
+		++localGeneration;
+		if ( localGeneration == 0 )
+		{
+			++localGeneration;
+		}
+		if ( multiplayerMode() == 2 )
+		{
+			queueReliable(PacketKind::Ready,
+				*reinterpret_cast<IpAddress*>(base + netServerRva), localGeneration);
+		}
+	}
+
+	bool isQualityPacket(const UdpPacket* packet)
+	{
+		return packet && packet->data && packet->len == static_cast<int>(packetSize)
+			&& std::memcmp(packet->data, "QMRF", 4) == 0
+			&& packet->data[4] == 1;
+	}
+
+	void processQualityPacket(const UdpPacket* packet)
+	{
+		const auto kind = static_cast<PacketKind>(packet->data[5]);
+		if ( kind == PacketKind::Acknowledgement )
+		{
+			const auto acknowledged = readU32(packet->data, 12);
+			const auto pending = pendingPackets.find(acknowledged);
+			if ( pending != pendingPackets.end()
+				&& sameAddress(pending->second.destination, packet->address) )
+			{
+				pendingPackets.erase(pending);
+			}
+			return;
+		}
+		if ( !floorMatches(packet->data) )
+		{
+			return;
+		}
+		const auto sequence = readU32(packet->data, 8);
+		sendAcknowledgement(packet->address, sequence);
+		const std::uint64_t delivery = addressKey(packet->address)
+			^ (static_cast<std::uint64_t>(sequence) << 1);
+		if ( !appliedPackets.insert(delivery).second )
+		{
+			return;
+		}
+		const auto generation = readU32(packet->data, 24);
+		if ( multiplayerMode() == 1
+			&& (kind == PacketKind::Ready || kind == PacketKind::Request) )
+		{
+			auto* clients = *reinterpret_cast<IpAddress**>(base + netClientsPointerRva);
+			bool connected = false;
+			if ( clients )
+			{
+				for ( int index = 0; index < 3; ++index )
+				{
+					connected = connected || sameAddress(clients[index], packet->address);
+				}
+			}
+			if ( !connected )
+			{
+				return;
+			}
+			auto& accepted = clientGenerations[addressKey(packet->address)];
+			if ( kind == PacketKind::Ready )
+			{
+				accepted = std::max(accepted, generation);
+				if ( revealState.active() )
+				{
+					queueReliable(PacketKind::Refresh, packet->address, accepted);
+				}
+			}
+			else if ( quality::minimap::reveal::acceptHostRequest(true, true,
+				generation, accepted) )
+			{
+				refreshRevealSnapshot();
+				broadcastRefresh();
+			}
+		}
+		else if ( multiplayerMode() == 2 && kind == PacketKind::Refresh
+			&& quality::minimap::reveal::acceptClientRefresh(sameAddress(
+				packet->address, *reinterpret_cast<IpAddress*>(base + netServerRva)),
+				true, generation, localGeneration) )
+		{
+			refreshRevealSnapshot();
+		}
+	}
+
+	int udpSendHook(UdpSocket socket, const int channel, UdpPacket* packet)
+	{
+		const int result = udpSend(socket, channel, packet);
+		flushPendingPackets();
+		return result;
+	}
+
+	int udpRecvHook(UdpSocket socket, UdpPacket* packet)
+	{
+		for ( ;; )
+		{
+			const int result = udpRecv(socket, packet);
+			if ( result <= 0 || !isQualityPacket(packet) )
+			{
+				return result;
+			}
+			processQualityPacket(packet);
+		}
+	}
+
 	std::uint8_t visibilityAt(const int x, const int y)
 	{
 		const int width = *reinterpret_cast<int*>(base + mapWidthRva);
@@ -256,6 +668,167 @@ namespace
 		const std::uint8_t value = *(base + minimapTilesRva
 			+ quality::minimap::tileIndex(x, y));
 		return value <= 4 ? value : 0;
+	}
+
+	std::vector<quality::minimap::reveal::Candidate> collectRevealCandidates(
+		List* entities, const std::unordered_set<std::uint32_t>& partyUids)
+	{
+		using quality::minimap::reveal::Candidate;
+		using quality::minimap::reveal::CandidateKind;
+		std::vector<Candidate> candidates;
+		if ( !entities )
+		{
+			return candidates;
+		}
+		const int lootBagIndex = *reinterpret_cast<int*>(
+			base + lootBagSpriteIndexRva);
+		const int lootBagVariations = *reinterpret_cast<int*>(
+			base + lootBagSpriteVariationsRva);
+		for ( Node* node = entities->first; node; node = node->next )
+		{
+			auto* entity = static_cast<std::uint8_t*>(node->element);
+			if ( !entity )
+			{
+				continue;
+			}
+			const auto entityUid = uid(entity);
+			const auto action = behavior(entity);
+			const int sprite = field<std::int32_t>(entity, entitySprite);
+			Candidate candidate;
+			candidate.uid = entityUid;
+			candidate.x = static_cast<int>(std::floor(
+				field<double>(entity, entityX) / 16.0));
+			candidate.y = static_cast<int>(std::floor(
+				field<double>(entity, entityY) / 16.0));
+
+			if ( quality::minimap::isExitSprite(sprite)
+				|| action == reinterpret_cast<std::uintptr_t>(base + actCustomPortalRva) )
+			{
+				candidate.kind = CandidateKind::Exit;
+			}
+			else if ( action == reinterpret_cast<std::uintptr_t>(base + actWorkbenchRva) )
+			{
+				candidate.kind = CandidateKind::Workbench;
+			}
+			else if ( action == reinterpret_cast<std::uintptr_t>(base + actCauldronRva) )
+			{
+				candidate.kind = CandidateKind::Cauldron;
+			}
+			else if ( sprite == 188 || sprite == 1791 )
+			{
+				candidate.kind = CandidateKind::Chest;
+				if ( skill(entity, 1) == 1 )
+				{
+					revealState.markUsed(entityUid);
+				}
+			}
+			else if ( sprite == 224 )
+			{
+				candidate.kind = CandidateKind::Grave;
+			}
+			else if ( sprite == 163 )
+			{
+				candidate.kind = CandidateKind::Fountain;
+				candidate.available = skill(entity, 0) > 0;
+				revealState.observeUses(entityUid, skill(entity, 0));
+			}
+			else if ( sprite == 164 )
+			{
+				candidate.kind = CandidateKind::Sink;
+				candidate.available = skill(entity, 0) > 0;
+				revealState.observeUses(entityUid, skill(entity, 0));
+			}
+			else if ( action == reinterpret_cast<std::uintptr_t>(
+				base + actColliderDecorationRva) )
+			{
+				candidate.kind = CandidateKind::BreakableContainer;
+				candidate.available = skill(entity, skillColliderMaxHp) > 0
+					&& skill(entity, skillColliderCurrentHp) > 0;
+				auto* contained = findEntity(entities, static_cast<std::uint32_t>(
+					skill(entity, skillColliderContainedEntity)));
+				candidate.hasLoot = contained
+					&& (behavior(contained) == reinterpret_cast<std::uintptr_t>(
+						base + actItemRva)
+						|| behavior(contained) == reinterpret_cast<std::uintptr_t>(
+							base + actGoldBagRva));
+			}
+			else if ( action == reinterpret_cast<std::uintptr_t>(base + actItemRva)
+				&& skill(entity, skillItemContainer) == 0 )
+			{
+				candidate.kind = CandidateKind::Item;
+				const auto originalOwner = static_cast<std::uint32_t>(
+					skill(entity, skillItemOriginalOwner));
+				const auto parent = field<std::uint32_t>(entity, entityParent);
+				candidate.playerOwned = partyUids.count(originalOwner) != 0
+					|| partyUids.count(parent) != 0;
+				candidate.lootBag = sprite >= lootBagIndex
+					&& sprite < lootBagIndex + lootBagVariations;
+			}
+			if ( candidate.kind != CandidateKind::None )
+			{
+				candidates.push_back(candidate);
+			}
+		}
+		return candidates;
+	}
+
+	void refreshRevealSnapshot()
+	{
+		auto* entities = *reinterpret_cast<List**>(base + mapEntitiesRva);
+		auto* creatures = *reinterpret_cast<List**>(base + mapCreaturesRva);
+		std::unordered_set<std::uint32_t> partyUids;
+		if ( creatures )
+		{
+			for ( Node* node = creatures->first; node; node = node->next )
+			{
+				auto* entity = static_cast<std::uint8_t*>(node->element);
+				if ( !entity )
+				{
+					continue;
+				}
+				const auto action = behavior(entity);
+				if ( action == reinterpret_cast<std::uintptr_t>(base + actPlayerRva)
+					|| (action == reinterpret_cast<std::uintptr_t>(base + actMonsterRva)
+						&& skill(entity, skillMonsterAllyIndex) >= 0) )
+				{
+					partyUids.insert(uid(entity));
+				}
+			}
+		}
+		revealCandidates = collectRevealCandidates(entities, partyUids);
+		revealState.refresh(revealCandidates);
+	}
+
+	int loadMapHook(const char* filename, void* destination, List* entities,
+		List* creatures, int* mapHash)
+	{
+		const int result = originalLoadMap(filename, destination, entities,
+			creatures, mapHash);
+		if ( result != -1 && destination == base + mapRva )
+		{
+			resetRevealFloor();
+			auto* loadedEntities = *reinterpret_cast<List**>(base + mapEntitiesRva);
+			collectRevealCandidates(loadedEntities, {});
+		}
+		return result;
+	}
+
+	const char* exitTooltipHook(const int languageId)
+	{
+		const char* text = languageGet(languageId);
+		if ( languageId == 4030 && revealState.tooltipEdge(
+			*reinterpret_cast<std::uint32_t*>(base + ticksRva)) )
+		{
+			requestTeamRefresh();
+		}
+		return text;
+	}
+
+	void headstoneDialogueHook(void* dialogue, const std::uint32_t entityUid,
+		const int type, const char* text)
+	{
+		createDialogue(dialogue, entityUid, type, text);
+		revealState.markUsed(entityUid);
 	}
 
 	void suppressVanilla(std::uint8_t* entity, const bool clearSprite)
@@ -326,6 +899,9 @@ namespace
 				partyUids.insert(uid(entity));
 			}
 		}
+		revealCandidates = collectRevealCandidates(entities, partyUids);
+		revealState.observeLive(revealCandidates);
+		flushPendingPackets();
 
 		for ( Node* node = entities->first; node; node = node->next )
 		{
@@ -354,8 +930,9 @@ namespace
 
 			if ( appearance == quality::minimap::MarkerAppearance::Exit )
 			{
-				if ( quality::minimap::exitVisible(visibility, showOnMap,
-					customPortal) )
+				if ( revealState.contains(uid(entity))
+					|| quality::minimap::exitVisible(visibility, showOnMap,
+						customPortal) )
 				{
 					visuals.push_back({VisualKind::Exit, tileX + .5, tileY + .5,
 						0.0, -1, false});
@@ -376,7 +953,7 @@ namespace
 			if ( appearance == quality::minimap::MarkerAppearance::Workbench
 				|| appearance == quality::minimap::MarkerAppearance::Cauldron )
 			{
-				if ( explored )
+				if ( explored || revealState.contains(uid(entity)) )
 				{
 					visuals.push_back({appearance
 						== quality::minimap::MarkerAppearance::Workbench
@@ -401,6 +978,15 @@ namespace
 				{
 					suppressVanilla(entity, false);
 				}
+			}
+		}
+
+		for ( const auto& marker : revealState.markers() )
+		{
+			if ( marker.kind == quality::minimap::reveal::Kind::Unused )
+			{
+				visuals.push_back({VisualKind::Unused, marker.x + .5,
+					marker.y + .5, 0.0, -1, false});
 			}
 		}
 
@@ -827,6 +1413,10 @@ namespace
 					circle(marker.x, marker.y, radius,
 						quality::minimap::minotaurRed, true);
 					break;
+				case VisualKind::Unused:
+					circle(marker.x, marker.y, radius,
+						quality::minimap::uninteractedGreen, true);
+					break;
 				case VisualKind::Player:
 					drawArrow(marker, visual.yaw,
 						visual.shadow ? quality::minimap::shadowGray
@@ -995,6 +1585,11 @@ namespace
 		if ( !matches(drawMinimapRva, drawMinimapSignature)
 			|| !matches(playerColorRva, playerColorSignature)
 			|| !matches(playSoundRva, playSoundSignature)
+			|| !matches(loadMapRva, loadMapSignature)
+			|| !matches(languageGetRva, languageGetSignature)
+			|| !matches(createDialogueRva, createDialogueSignature)
+			|| !matches(exitTooltipLadderCallRva, exitTooltipLadderCall)
+			|| !matches(exitTooltipPortalCallRva, exitTooltipPortalCall)
 			|| !matches(lootBagColorCallRva, lootBagColorCall)
 			|| !matches(lootBagColorblindCallRva, lootBagColorblindCall)
 			|| !matches(pingColorBlockRva, pingColorBlock)
@@ -1010,6 +1605,19 @@ namespace
 				return false;
 			}
 		}
+		for ( std::size_t index = 0; index < headstoneDialogueCallRvas.size(); ++index )
+		{
+			if ( !matches(headstoneDialogueCallRvas[index],
+				headstoneDialogueCalls[index]) )
+			{
+				return false;
+			}
+		}
+		if ( !*reinterpret_cast<UdpRecvFn*>(base + udpRecvIatRva)
+			|| !*reinterpret_cast<UdpSendFn*>(base + udpSendIatRva) )
+		{
+			return false;
+		}
 		return true;
 	}
 
@@ -1023,6 +1631,20 @@ namespace
 		patch.expected.assign(expected.begin(), expected.end());
 		patch.replacement = std::move(replacement);
 		patch.original.assign(base + rva, base + rva + patch.replacement.size());
+		patches.push_back(std::move(patch));
+	}
+
+	template <typename T>
+	void addPointerPatch(std::vector<quality::runtime::Patch>& patches,
+		const std::uintptr_t rva, const T expected, const T replacement)
+	{
+		quality::runtime::Patch patch;
+		patch.rva = rva;
+		const auto* expectedBytes = reinterpret_cast<const std::uint8_t*>(&expected);
+		const auto* replacementBytes = reinterpret_cast<const std::uint8_t*>(&replacement);
+		patch.expected.assign(expectedBytes, expectedBytes + sizeof(T));
+		patch.replacement.assign(replacementBytes, replacementBytes + sizeof(T));
+		patch.original.assign(base + rva, base + rva + sizeof(T));
 		patches.push_back(std::move(patch));
 	}
 }
@@ -1040,10 +1662,16 @@ namespace quality::minimap_runtime
 		originalPlayerColor = reinterpret_cast<PlayerColorFn>(base + playerColorRva);
 		drawTriangle = reinterpret_cast<DrawTriangleFn>(base + drawTriangleRva);
 		playSound = reinterpret_cast<PlaySoundFn>(base + playSoundRva);
-		relayPage = allocateNearModule(3 * relayStride);
+		languageGet = reinterpret_cast<LanguageGetFn>(base + languageGetRva);
+		createDialogue = reinterpret_cast<CreateDialogueFn>(base + createDialogueRva);
+		udpRecv = *reinterpret_cast<UdpRecvFn*>(base + udpRecvIatRva);
+		udpSend = *reinterpret_cast<UdpSendFn*>(base + udpSendIatRva);
+		relayPage = allocateNearModule(5 * relayStride);
 		drawTrampoline = VirtualAlloc(nullptr, 64, MEM_COMMIT | MEM_RESERVE,
 			PAGE_EXECUTE_READWRITE);
-		if ( !relayPage || !drawTrampoline )
+		loadMapTrampoline = VirtualAlloc(nullptr, 64, MEM_COMMIT | MEM_RESERVE,
+			PAGE_EXECUTE_READWRITE);
+		if ( !relayPage || !drawTrampoline || !loadMapTrampoline )
 		{
 			release();
 			return false;
@@ -1053,8 +1681,13 @@ namespace quality::minimap_runtime
 		auto* playerColorRelay = relay;
 		auto* ghostTriangleRelay = relay + relayStride;
 		auto* pingRelay = relay + 2 * relayStride;
+		auto* exitTooltipRelay = relay + 3 * relayStride;
+		auto* headstoneDialogueRelay = relay + 4 * relayStride;
 		writeRelay(playerColorRelay, reinterpret_cast<void*>(&playerColorHook));
 		writeRelay(ghostTriangleRelay, reinterpret_cast<void*>(&ghostTriangleHook));
+		writeRelay(exitTooltipRelay, reinterpret_cast<void*>(&exitTooltipHook));
+		writeRelay(headstoneDialogueRelay,
+			reinterpret_cast<void*>(&headstoneDialogueHook));
 		const auto pingStub = makePingStub();
 		if ( pingStub.empty() || pingStub.size() > relayStride )
 		{
@@ -1068,9 +1701,27 @@ namespace quality::minimap_runtime
 		const auto jumpBack = absoluteJump(base + drawMinimapRva + drawHookBytes);
 		std::memcpy(trampoline + drawHookBytes, jumpBack.data(), jumpBack.size());
 		originalDrawMinimap = reinterpret_cast<DrawMinimapFn>(trampoline);
+		auto* loadTrampoline = static_cast<std::uint8_t*>(loadMapTrampoline);
+		std::memcpy(loadTrampoline, base + loadMapRva, loadMapHookBytes);
+		const auto loadJumpBack = absoluteJump(base + loadMapRva + loadMapHookBytes);
+		std::memcpy(loadTrampoline + loadMapHookBytes, loadJumpBack.data(),
+			loadJumpBack.size());
+		originalLoadMap = reinterpret_cast<LoadMapFn>(loadTrampoline);
 
 		addPatch(patches, drawMinimapRva, drawMinimapSignature,
 			absoluteJump(reinterpret_cast<void*>(&drawMinimapHook)));
+		addPatch(patches, loadMapRva, loadMapSignature,
+			absoluteJump(reinterpret_cast<void*>(&loadMapHook)));
+		addPatch(patches, exitTooltipLadderCallRva, exitTooltipLadderCall,
+			relativeCall(exitTooltipLadderCallRva, exitTooltipRelay));
+		addPatch(patches, exitTooltipPortalCallRva, exitTooltipPortalCall,
+			relativeCall(exitTooltipPortalCallRva, exitTooltipRelay));
+		for ( std::size_t index = 0; index < headstoneDialogueCallRvas.size(); ++index )
+		{
+			addPatch(patches, headstoneDialogueCallRvas[index],
+				headstoneDialogueCalls[index], relativeCall(
+					headstoneDialogueCallRvas[index], headstoneDialogueRelay));
+		}
 		addPatch(patches, lootBagColorCallRva, lootBagColorCall,
 			relativeCall(lootBagColorCallRva, playerColorRelay));
 		addPatch(patches, lootBagColorblindCallRva, lootBagColorblindCall,
@@ -1087,6 +1738,8 @@ namespace quality::minimap_runtime
 			addPatch(patches, ghostTriangleCallRvas[index], ghostTriangleCalls[index],
 				relativeCall(ghostTriangleCallRvas[index], ghostTriangleRelay));
 		}
+		addPointerPatch(patches, udpRecvIatRva, udpRecv, &udpRecvHook);
+		addPointerPatch(patches, udpSendIatRva, udpSend, &udpSendHook);
 		return true;
 	}
 
@@ -1097,6 +1750,12 @@ namespace quality::minimap_runtime
 			VirtualFree(drawTrampoline, 0, MEM_RELEASE);
 			drawTrampoline = nullptr;
 			originalDrawMinimap = nullptr;
+		}
+		if ( loadMapTrampoline )
+		{
+			VirtualFree(loadMapTrampoline, 0, MEM_RELEASE);
+			loadMapTrampoline = nullptr;
+			originalLoadMap = nullptr;
 		}
 		if ( relayPage )
 		{

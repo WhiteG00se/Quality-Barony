@@ -165,15 +165,15 @@ namespace
 		quality::minimap::formatExitTooltip(text.data(), text.size(),
 			"Exit dungeon floor", 0, 0);
 		assert(std::string(text.data())
-			== "Exit dungeon floor\n[0 hostiles / 0 neutrals alive]");
+			== "Exit dungeon floor\n0 hostiles / 0 neutrals alive");
 		quality::minimap::formatExitTooltip(text.data(), text.size(),
 			"Exit secret level", 1, 1);
 		assert(std::string(text.data())
-			== "Exit secret level\n[1 hostiles / 1 neutrals alive]");
+			== "Exit secret level\n1 hostiles / 1 neutrals alive");
 		quality::minimap::formatExitTooltip(text.data(), text.size(),
 			"Step through portal", 12, 3);
 		assert(std::string(text.data())
-			== "Step through portal\n[12 hostiles / 3 neutrals alive]");
+			== "Step through portal\n12 hostiles / 3 neutrals alive");
 	}
 
 	void testPersistentRevealLifecycle()

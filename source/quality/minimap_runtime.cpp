@@ -2198,8 +2198,9 @@ namespace quality::minimap_runtime
 		std::vector<std::uint8_t> primaryTooltipHeight = {
 			0x8B, 0x48, 0x30,             // width = rendered text width
 			0x89, 0x4C, 0x24, 0x78,
-			0x8B, 0x40, 0x34,             // height = rendered text height
-			0x83, 0xC0, 0x08,             // retain Barony's padding
+			0x8B, 0x48, 0x38,             // rendered line count
+			0x0F, 0xAF, 0x48, 0x34,       // height = lines * line height
+			0x8D, 0x41, 0x08,             // retain Barony's padding
 			0x89, 0x44, 0x24, 0x7C,
 		};
 		primaryTooltipHeight.resize(worldTooltipHeightPrimary.size(), 0x90);
@@ -2209,8 +2210,9 @@ namespace quality::minimap_runtime
 			0x8B, 0x48, 0x30,             // width = rendered text width
 			0x89, 0x4C, 0x24, 0x34,
 			0x89, 0x4C, 0x24, 0x78,
-			0x8B, 0x40, 0x34,             // height = rendered text height
-			0x83, 0xC0, 0x08,             // retain Barony's padding
+			0x8B, 0x48, 0x38,             // rendered line count
+			0x0F, 0xAF, 0x48, 0x34,       // height = lines * line height
+			0x8D, 0x41, 0x08,             // retain Barony's padding
 			0x89, 0x44, 0x24, 0x7C,
 		};
 		alternateTooltipHeight.resize(worldTooltipHeightAlternate.size(), 0x90);

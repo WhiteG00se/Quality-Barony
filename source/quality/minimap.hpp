@@ -96,7 +96,7 @@ namespace quality::minimap
 			return -1;
 		}
 		return std::snprintf(output, outputSize,
-			"%s\n[%d hostiles / %d neutrals alive]",
+			"%s\n%d hostiles / %d neutrals alive",
 			exitText ? exitText : "", hostiles, neutrals);
 	}
 

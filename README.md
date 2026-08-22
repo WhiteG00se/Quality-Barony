@@ -18,12 +18,12 @@
 
 | EXP Receiver | Range | Solo | 2 players | 3 players | 4 players |
 |---|---:|---:|---:|---:|---:|
-| Ordinary follower<br>(other player last hits) | ~~\~6,250 tiles~~<br>`Global` | — | ~~0%~~<br>`100%` | ~~0%~~<br>`90%` | ~~0%~~<br>`80%` |
-| Ordinary follower<br>(its player last hits) | ~~\~6,250 tiles~~<br>`Global` | ~~100%~~<br>`125%` | ~~90%~~<br>`100%` | ~~80%~~<br>`90%` | ~~70%~~<br>`80%` |
-| Ordinary follower<br>(it last hits) | ~~\~6,250 tiles~~<br>`Global` | ~~200%~~<br>`125%` | ~~190%~~<br>`100%` | ~~180%~~<br>`90%` | ~~170%~~<br>`80%` |
-| Conjurer summon<br>(other player last hits) | ~~\~6,250 tiles~~<br>`Global` | — | ~~0%~~<br>`100%` | ~~0%~~<br>`90%` | ~~0%~~<br>`80%` |
-| Conjurer summon<br>(its player last hits) | ~~\~6,250 tiles~~<br>`Global` | ~~100%~~<br>`125%` | ~~100%~~<br>`100%` | ~~100%~~<br>`90%` | ~~100%~~<br>`80%` |
-| Conjurer summon<br>(it last hits) | ~~\~6,250 tiles~~<br>`Global` | ~~200%~~<br>`125%` | ~~200%~~<br>`100%` | ~~200%~~<br>`90%` | ~~200%~~<br>`80%` |
+| Ordinary follower<br>(other player last hits) | ~~\~6,250 tiles~~<br>`Global` | — | ~~0%~~<br>`112.5%` | ~~0%~~<br>`100%` | ~~0%~~<br>`87.5%` |
+| Ordinary follower<br>(its player last hits) | ~~\~6,250 tiles~~<br>`Global` | ~~100%~~<br>`125%` | ~~90%~~<br>`112.5%` | ~~80%~~<br>`100%` | ~~70%~~<br>`87.5%` |
+| Ordinary follower<br>(it last hits) | ~~\~6,250 tiles~~<br>`Global` | ~~200%~~<br>`125%` | ~~190%~~<br>`112.5%` | ~~180%~~<br>`100%` | ~~170%~~<br>`87.5%` |
+| Conjurer summon<br>(other player last hits) | ~~\~6,250 tiles~~<br>`Global` | — | ~~0%~~<br>`112.5%` | ~~0%~~<br>`100%` | ~~0%~~<br>`87.5%` |
+| Conjurer summon<br>(its player last hits) | ~~\~6,250 tiles~~<br>`Global` | ~~100%~~<br>`125%` | ~~100%~~<br>`112.5%` | ~~100%~~<br>`100%` | ~~100%~~<br>`87.5%` |
+| Conjurer summon<br>(it last hits) | ~~\~6,250 tiles~~<br>`Global` | ~~200%~~<br>`125%` | ~~200%~~<br>`112.5%` | ~~200%~~<br>`100%` | ~~200%~~<br>`87.5%` |
 | Player (last hits) | Global | 100% | 90% | 80% | 70% |
 | Player (any follower last hits) | Global | 100% | 90% | 80% | 70% |
 | Player (other player last hits) | Global | — | 90% | 80% | 70% |

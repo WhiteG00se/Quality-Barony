@@ -952,8 +952,9 @@ namespace
 				&& skill(entity, skillItemContainer) == 0 )
 			{
 				candidate.kind = CandidateKind::Item;
+				candidate.identified = skill(entity, skillItemIdentified) != 0;
 				candidate.available = quality::minimap::reveal::eligibleRevealedGroundItem(
-					skill(entity, skillItemType), skill(entity, skillItemIdentified) != 0);
+					skill(entity, skillItemType), candidate.identified);
 				const auto originalOwner = static_cast<std::uint32_t>(
 					skill(entity, skillItemOriginalOwner));
 				const auto parent = field<std::uint32_t>(entity, entityParent);

@@ -54,6 +54,7 @@ namespace quality::minimap::reveal
 		int y = 0;
 		CandidateKind kind = CandidateKind::None;
 		bool available = true;
+		bool identified = true;
 		bool hasLoot = false;
 		bool playerOwned = false;
 		bool lootBag = false;
@@ -103,7 +104,8 @@ namespace quality::minimap::reveal
 			case CandidateKind::BreakableContainer:
 				return candidate.hasLoot;
 			case CandidateKind::Item:
-				return !candidate.playerOwned && !candidate.lootBag;
+				return (!candidate.identified || !candidate.playerOwned)
+					&& !candidate.lootBag;
 			case CandidateKind::Gold:
 				return true;
 			case CandidateKind::Exit:

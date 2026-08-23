@@ -115,6 +115,9 @@ namespace
 		assert(eligible(candidate, false));
 		candidate.playerOwned = true;
 		assert(!eligible(candidate, false));
+		candidate.identified = false;
+		assert(eligible(candidate, false));
+		candidate.identified = true;
 		candidate.playerOwned = false;
 		candidate.lootBag = true;
 		assert(!eligible(candidate, false));

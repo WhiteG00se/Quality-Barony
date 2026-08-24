@@ -11,6 +11,7 @@
 #include "../quality/minimap_reveal.hpp"
 #include "../quality/minimap_chests.hpp"
 #include "../quality/friendly_fire.hpp"
+#include "../quality/follower_roster.hpp"
 #include "../quality/xp_participation.hpp"
 
 namespace
@@ -598,6 +599,34 @@ namespace
 
 int main()
 {
+	{
+		using namespace quality::follower_roster;
+		State roster;
+		assert(roster.upsert({ 30, 2, 4, 10, 20, 9, 123, 0, "Bones" }));
+		assert(roster.upsert({ 20, 1, 3, 8, 12, 1, 456, 0, "Alice" }));
+		assert(roster.upsert({ 15, 1, 2, 7, 11, 2, 654, 1, "Second" }));
+		assert(roster.upsert({ 10, 0, 2, 6, 10, 2, 789, 0, "Mine" }));
+		assert(!roster.upsert({ 20, 1, 3, 8, 12, 1, 456, 0, "Alice" }));
+
+		const auto remote = visibleRemoteEntries(roster.entries(), 0);
+		assert(remote.size() == 3);
+		assert(remote[0].uid == 20 && remote[1].uid == 15
+			&& remote[2].uid == 30);
+		assert(displayName("Thomas", remote[0].name, remote[0].owner)
+			== "T's Alice");
+		assert(displayName("", "Bones", 2) == "P3's Bones");
+		assert(firstUtf8Character("\xC3\x89mile") == "\xC3\x89");
+
+		assert(roster.upsert({ 20, 1, 4, 5, 12, 1, 456, 0, "Alice" }));
+		assert(roster.entries().at(20).level == 4);
+		assert(roster.entries().at(20).hp == 5);
+		assert(roster.upsert({ 20, 1, 4, 0, 12, 1, 456, 0, "Alice" }));
+		assert(roster.entries().find(20) == roster.entries().end());
+		assert(!eligible({ 0, 1, 1, 1, 1, 1, 1, 0, "Invalid" }));
+		roster.reset();
+		assert(roster.entries().empty());
+	}
+
 	static_assert(quality::minimap::dimension == 512);
 	static_assert(quality::minimap::tileIndex(17, 9) == 4625);
 	static_assert(quality::minimap::white == 0xFFFFFFFFU);

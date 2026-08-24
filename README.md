@@ -17,6 +17,7 @@
 <summary><strong>Generic Changes</strong></summary>
 
 - <code>When friendly fire is disabled, non-player units other than followers and summons no longer treat one another as hostile and cannot damage one another. A Confused or Drunk attacker retains vanilla hostility and bypasses friendly-fire protection (same goes for players and their followers & summons).</code>
+- <code>The top-right follower roster also shows teammates' followers and summons after your own. Teammate units are display-only and use an owner prefix such as T's; they cannot be selected or commanded.</code>
 
 </details>
 

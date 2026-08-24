@@ -9,12 +9,14 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <string>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
 #include <vector>
 
 #include "minimap.hpp"
+#include "follower_roster.hpp"
 #include "minimap_chests.hpp"
 #include "minimap_items.hpp"
 #include "minimap_reveal.hpp"
@@ -37,6 +39,8 @@ namespace
 	constexpr std::uintptr_t loadMapRva = 0x004A7F10;
 	constexpr std::uintptr_t languageGetRva = 0x004D37B0;
 	constexpr std::uintptr_t createDialogueRva = 0x00840370;
+	constexpr std::uintptr_t updateAllyFollowerFrameRva = 0x008859F0;
+	constexpr std::uintptr_t getMonsterLocalizedNameRva = 0x00340E90;
 	constexpr std::uintptr_t actPlayerRva = 0x00355FE0;
 	constexpr std::uintptr_t actMonsterRva = 0x0032D4D0;
 	constexpr std::uintptr_t actItemRva = 0x0031B480;
@@ -87,6 +91,7 @@ namespace
 	constexpr std::uintptr_t udpRecvIatRva = 0x00ACCD58;
 	constexpr std::uintptr_t udpSendIatRva = 0x00ACCD60;
 	constexpr std::uintptr_t mapRva = mapWidthRva - 64;
+	constexpr std::uintptr_t followerMenusRva = 0x00C28FB0;
 
 	constexpr std::size_t entityUid = 0x68;
 	constexpr std::size_t entityX = 0xD8;
@@ -98,6 +103,7 @@ namespace
 	constexpr std::size_t entityChildren = 0x3A0;
 	constexpr std::size_t entityParent = 0x3B0;
 	constexpr std::size_t entityBehavior = 0x1350;
+	constexpr std::size_t playerEntity = 0x18;
 	constexpr std::size_t skillPlayerIndex = 2;
 	constexpr std::size_t skillMonsterAllyIndex = 42;
 	constexpr std::size_t skillShadowTaggedUid = 54;
@@ -113,6 +119,16 @@ namespace
 	constexpr std::size_t skillColliderContainedEntity = 15;
 	constexpr std::size_t skillChestVoidState = 17;
 	constexpr std::size_t itemCount = 0x0A;
+	constexpr std::size_t statType = 0xE0;
+	constexpr std::size_t statName = 0xEC;
+	constexpr std::size_t statHp = 0x220;
+	constexpr std::size_t statMaxHp = 0x224;
+	constexpr std::size_t statMp = 0x22C;
+	constexpr std::size_t statMaxMp = 0x230;
+	constexpr std::size_t statLevel = 0x250;
+	constexpr std::size_t followerMenuStride = 0x100;
+	constexpr std::size_t followerMenuRecentEntity = 0x08;
+	constexpr std::size_t syntheticStatSize = 0x300;
 
 	constexpr std::array<std::uint8_t, 32> drawMinimapSignature = {
 		0x48, 0x8B, 0xC4, 0x48, 0x89, 0x58, 0x18, 0x55,
@@ -146,6 +162,16 @@ namespace
 		0x48, 0x8B, 0xC4, 0x4C, 0x89, 0x48, 0x20, 0x55,
 		0x53, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41,
 	};
+	constexpr std::array<std::uint8_t, 16> updateAllyFollowerFrameSignature = {
+		0x48, 0x8B, 0xC4, 0x48, 0x89, 0x58, 0x10, 0x48,
+		0x89, 0x70, 0x18, 0x48, 0x89, 0x78, 0x20, 0x55,
+	};
+	constexpr std::array<std::uint8_t, 16> getMonsterLocalizedNameSignature = {
+		0x48, 0x89, 0x5C, 0x24, 0x08, 0x48, 0x89, 0x6C,
+		0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18, 0x57,
+	};
+	constexpr std::size_t updateAllyFollowerFrameHookBytes = 15;
+	constexpr std::size_t getStatsHookBytes = 14;
 	constexpr std::array<std::array<std::uint8_t, 5>, 4> exitTooltipCalls = {{
 		{0xE8, 0x90, 0xF2, 0xED, 0xFF},
 		{0xE8, 0x14, 0xF2, 0xED, 0xFF},
@@ -207,8 +233,27 @@ namespace
 	}};
 
 	struct Rect { int x; int y; int w; int h; };
-	struct Node { Node* next; Node* previous; void* list; void* element; };
+	struct Node
+	{
+		Node* next;
+		Node* previous;
+		void* list;
+		void* element;
+		void (*deconstructor)(void*);
+		std::uint32_t size;
+	};
 	struct List { Node* first; Node* last; };
+	struct MsvcString
+	{
+		union
+		{
+			char inlineData[16];
+			char* heapData;
+		} storage {};
+		std::uint64_t size = 0;
+		std::uint64_t capacity = 15;
+	};
+	static_assert(sizeof(MsvcString) == 32);
 
 	enum class VisualKind
 	{
@@ -259,6 +304,9 @@ namespace
 	};
 	using UdpSendFn = int (*)(UdpSocket, int, UdpPacket*);
 	using UdpRecvFn = int (*)(UdpSocket, UdpPacket*);
+	using UpdateAllyFollowerFrameFn = void (*)(int);
+	using GetMonsterLocalizedNameFn = MsvcString* (*)(MsvcString*, int, void*);
+	using MsvcStringDestroyFn = void (*)(MsvcString*);
 	using GlUseProgramFn = void (APIENTRY*)(GLuint);
 	using GlCreateShaderFn = GLuint (APIENTRY*)(GLenum);
 	using GlShaderSourceFn = void (APIENTRY*)(GLuint, GLsizei,
@@ -301,9 +349,15 @@ namespace
 	CreateDialogueFn createDialogue = nullptr;
 	UdpSendFn udpSend = nullptr;
 	UdpRecvFn udpRecv = nullptr;
+	UpdateAllyFollowerFrameFn originalUpdateAllyFollowerFrame = nullptr;
+	GetStatsFn originalGetStats = nullptr;
+	GetMonsterLocalizedNameFn getMonsterLocalizedName = nullptr;
+	MsvcStringDestroyFn destroyMsvcString = nullptr;
 	void* relayPage = nullptr;
 	void* drawTrampoline = nullptr;
 	void* loadMapTrampoline = nullptr;
+	void* followerFrameTrampoline = nullptr;
+	void* getStatsTrampoline = nullptr;
 	Rect currentRect {};
 	int currentViewer = 0;
 	std::vector<Visual> visuals;
@@ -320,6 +374,12 @@ namespace
 	quality::minimap::chests::State chestState;
 	std::unordered_set<std::uint32_t> seenWorldItems;
 	bool inMinimapDraw = false;
+	bool inFollowerRosterDraw = false;
+	std::unordered_map<std::uint8_t*, std::array<std::uint8_t,
+		syntheticStatSize>> syntheticFollowerStats;
+	quality::follower_roster::State sharedFollowerRoster;
+	quality::follower_roster::State publishedFollowerRoster;
+	std::uint32_t lastFollowerRosterTick = 0;
 
 	GlUseProgramFn useProgram = nullptr;
 	GlCreateShaderFn createShader = nullptr;
@@ -418,6 +478,11 @@ namespace
 		ItemRemoved = 7,
 		ChestState = 8,
 	};
+	enum class RosterPacketKind : std::uint8_t
+	{
+		Upsert = 1,
+		Remove = 2,
+	};
 
 	struct ItemPacketPayload
 	{
@@ -429,9 +494,10 @@ namespace
 	};
 
 	constexpr std::size_t packetSize = 48;
+	constexpr std::size_t rosterPacketSize = 184;
 	struct PendingPacket
 	{
-		std::array<std::uint8_t, packetSize> bytes {};
+		std::vector<std::uint8_t> bytes;
 		IpAddress destination {};
 		std::uint32_t createdTick = 0;
 		std::uint32_t lastSentTick = 0;
@@ -515,7 +581,7 @@ namespace
 		return bytes;
 	}
 
-	void sendBytes(const std::array<std::uint8_t, packetSize>& bytes,
+	void sendBytes(const std::uint8_t* bytes, const std::size_t size,
 		const IpAddress destination)
 	{
 		if ( !udpSend )
@@ -529,11 +595,17 @@ namespace
 		}
 		UdpPacket packet {};
 		packet.channel = -1;
-		packet.data = const_cast<std::uint8_t*>(bytes.data());
-		packet.len = static_cast<int>(bytes.size());
+		packet.data = const_cast<std::uint8_t*>(bytes);
+		packet.len = static_cast<int>(size);
 		packet.maxlen = packet.len;
 		packet.address = destination;
 		udpSend(socket, -1, &packet);
+	}
+
+	template <typename T>
+	void sendBytes(const T& bytes, const IpAddress destination)
+	{
+		sendBytes(bytes.data(), bytes.size(), destination);
 	}
 
 	void queueReliable(const PacketKind kind, const IpAddress destination,
@@ -546,7 +618,8 @@ namespace
 			sequence = networkSequence++;
 		}
 		PendingPacket pending;
-		pending.bytes = makePacket(kind, sequence, 0, generation, payload);
+		const auto bytes = makePacket(kind, sequence, 0, generation, payload);
+		pending.bytes.assign(bytes.begin(), bytes.end());
 		pending.destination = destination;
 		pending.createdTick = *reinterpret_cast<std::uint32_t*>(base + ticksRva);
 		pendingPackets[sequence] = pending;
@@ -559,6 +632,52 @@ namespace
 	{
 		sendBytes(makePacket(PacketKind::Acknowledgement, 0, sequence,
 			localGeneration), destination);
+	}
+
+	std::array<std::uint8_t, rosterPacketSize> makeRosterPacket(
+		const RosterPacketKind kind, const std::uint32_t sequence,
+		const std::uint32_t generation,
+		const quality::follower_roster::Entry& entry)
+	{
+		std::array<std::uint8_t, rosterPacketSize> bytes {};
+		bytes[0] = 'Q'; bytes[1] = 'F'; bytes[2] = 'R'; bytes[3] = 'S';
+		bytes[4] = 1;
+		bytes[5] = static_cast<std::uint8_t>(kind);
+		bytes[6] = *reinterpret_cast<std::uint8_t*>(base + secretLevelRva) ? 1 : 0;
+		bytes[7] = static_cast<std::uint8_t>(entry.owner);
+		writeU32(bytes.data(), 8, sequence);
+		writeU32(bytes.data(), 16, static_cast<std::uint32_t>(
+			*reinterpret_cast<std::int32_t*>(base + currentLevelRva)));
+		writeU32(bytes.data(), 20,
+			*reinterpret_cast<std::uint32_t*>(base + mapSeedRva));
+		writeU32(bytes.data(), 24, generation);
+		writeU32(bytes.data(), 32, entry.uid);
+		writeU32(bytes.data(), 36, static_cast<std::uint32_t>(entry.level));
+		writeU32(bytes.data(), 40, static_cast<std::uint32_t>(entry.hp));
+		writeU32(bytes.data(), 44, static_cast<std::uint32_t>(entry.maxHp));
+		writeU32(bytes.data(), 48, static_cast<std::uint32_t>(entry.type));
+		writeU32(bytes.data(), 52, static_cast<std::uint32_t>(entry.model));
+		writeU32(bytes.data(), 56, static_cast<std::uint32_t>(entry.order));
+		const auto length = std::min(entry.name.size(), rosterPacketSize - 61);
+		std::memcpy(bytes.data() + 60, entry.name.data(), length);
+		bytes[60 + length] = 0;
+		return bytes;
+	}
+
+	void queueRosterReliable(const RosterPacketKind kind,
+		const IpAddress destination, const std::uint32_t generation,
+		const quality::follower_roster::Entry& entry)
+	{
+		std::uint32_t sequence = networkSequence++;
+		if ( sequence == 0 ) { sequence = networkSequence++; }
+		const auto bytes = makeRosterPacket(kind, sequence, generation, entry);
+		PendingPacket pending;
+		pending.bytes.assign(bytes.begin(), bytes.end());
+		pending.destination = destination;
+		pending.createdTick = *reinterpret_cast<std::uint32_t*>(base + ticksRva);
+		pending.lastSentTick = pending.createdTick;
+		pendingPackets[sequence] = pending;
+		sendBytes(pending.bytes, destination);
 	}
 
 	void flushPendingPackets()
@@ -624,6 +743,89 @@ namespace
 		}
 	}
 
+	void broadcastRosterEntry(const RosterPacketKind kind,
+		const quality::follower_roster::Entry& entry)
+	{
+		if ( multiplayerMode() != 1 ) { return; }
+		auto* clients = *reinterpret_cast<IpAddress**>(base + netClientsPointerRva);
+		const auto* disconnected = base + clientDisconnectedRva;
+		if ( !clients ) { return; }
+		for ( int player = 1; player < quality::follower_roster::maximumPlayers;
+			++player )
+		{
+			if ( disconnected[player] ) { continue; }
+			const IpAddress destination = clients[player - 1];
+			const auto generation = clientGenerations.find(addressKey(destination));
+			if ( generation != clientGenerations.end() )
+			{
+				queueRosterReliable(kind, destination, generation->second, entry);
+			}
+		}
+	}
+
+	quality::follower_roster::State collectFollowerRoster()
+	{
+		quality::follower_roster::State result;
+		auto** playerStats = reinterpret_cast<std::uint8_t**>(base + layout::statsRva);
+		const auto* disconnected = base + clientDisconnectedRva;
+		for ( int owner = 0; owner < quality::follower_roster::maximumPlayers;
+			++owner )
+		{
+			if ( disconnected[owner] || !playerStats[owner] ) { continue; }
+			auto& followers = field<List>(playerStats[owner], layout::statFollowers);
+			int order = 0;
+			for ( Node* node = followers.first; node; node = node->next, ++order )
+			{
+				auto* uidPointer = static_cast<std::uint32_t*>(node->element);
+				auto* entity = uidPointer ? findEntity(
+					*reinterpret_cast<List**>(base + mapCreaturesRva), *uidPointer)
+					: nullptr;
+				auto* stats = entity ? originalGetStats(entity) : nullptr;
+				if ( !entity || !stats ) { continue; }
+				quality::follower_roster::Entry entry;
+				entry.uid = *uidPointer;
+				entry.owner = owner;
+				entry.level = field<std::int32_t>(stats, statLevel);
+				entry.hp = field<std::int32_t>(stats, statHp);
+				entry.maxHp = field<std::int32_t>(stats, statMaxHp);
+				entry.type = field<std::int32_t>(stats, statType);
+				entry.model = field<std::int32_t>(entity, entitySprite);
+				entry.order = order;
+				const char* name = reinterpret_cast<const char*>(stats + statName);
+				entry.name.assign(name, strnlen(name, 127));
+				result.upsert(entry);
+			}
+		}
+		return result;
+	}
+
+	void refreshFollowerRoster()
+	{
+		if ( multiplayerMode() == layout::multiplayerClient ) { return; }
+		const auto now = *reinterpret_cast<std::uint32_t*>(base + ticksRva);
+		if ( now - lastFollowerRosterTick < 10U ) { return; }
+		lastFollowerRosterTick = now;
+		auto current = collectFollowerRoster();
+		for ( const auto& pair : current.entries() )
+		{
+			const auto previous = publishedFollowerRoster.entries().find(pair.first);
+			if ( previous == publishedFollowerRoster.entries().end()
+				|| !(previous->second == pair.second) )
+			{
+				broadcastRosterEntry(RosterPacketKind::Upsert, pair.second);
+			}
+		}
+		for ( const auto& pair : publishedFollowerRoster.entries() )
+		{
+			if ( current.entries().find(pair.first) == current.entries().end() )
+			{
+				broadcastRosterEntry(RosterPacketKind::Remove, pair.second);
+			}
+		}
+		publishedFollowerRoster = current;
+		sharedFollowerRoster = std::move(current);
+	}
+
 	ItemPacketPayload itemPayload(const quality::minimap::items::Marker& marker)
 	{
 		return {marker.markerId, marker.entityUid, marker.inventoryKey,
@@ -675,6 +877,10 @@ namespace
 		partyItemState.reset();
 		chestState.reset();
 		seenWorldItems.clear();
+		sharedFollowerRoster.reset();
+		publishedFollowerRoster.reset();
+		syntheticFollowerStats.clear();
+		lastFollowerRosterTick = 0;
 		pendingPackets.clear();
 		// A client can finish loading and announce readiness before the host.
 		// Keep that announcement; floor identity still gates every packet.
@@ -698,6 +904,55 @@ namespace
 			&& packet->data[4] == 4
 			&& packet->data[5] >= static_cast<std::uint8_t>(PacketKind::Ready)
 			&& packet->data[5] <= static_cast<std::uint8_t>(PacketKind::ChestState);
+	}
+
+	bool isRosterPacket(const UdpPacket* packet)
+	{
+		return packet && packet->data
+			&& packet->len == static_cast<int>(rosterPacketSize)
+			&& std::memcmp(packet->data, "QFRS", 4) == 0
+			&& packet->data[4] == 1
+			&& packet->data[5] >= static_cast<std::uint8_t>(
+				RosterPacketKind::Upsert)
+			&& packet->data[5] <= static_cast<std::uint8_t>(
+				RosterPacketKind::Remove);
+	}
+
+	void processRosterPacket(const UdpPacket* packet)
+	{
+		if ( !floorMatches(packet->data) ) { return; }
+		const auto sequence = readU32(packet->data, 8);
+		sendAcknowledgement(packet->address, sequence);
+		const std::uint64_t delivery = addressKey(packet->address)
+			^ (static_cast<std::uint64_t>(sequence) << 1);
+		if ( !appliedPackets.insert(delivery).second ) { return; }
+		if ( multiplayerMode() != layout::multiplayerClient
+			|| !quality::minimap::reveal::acceptClientRefresh(sameAddress(
+				packet->address, *reinterpret_cast<IpAddress*>(base + netServerRva)),
+				true, readU32(packet->data, 24), localGeneration) )
+		{
+			return;
+		}
+		quality::follower_roster::Entry entry;
+		entry.owner = packet->data[7];
+		entry.uid = readU32(packet->data, 32);
+		entry.level = static_cast<std::int32_t>(readU32(packet->data, 36));
+		entry.hp = static_cast<std::int32_t>(readU32(packet->data, 40));
+		entry.maxHp = static_cast<std::int32_t>(readU32(packet->data, 44));
+		entry.type = static_cast<std::int32_t>(readU32(packet->data, 48));
+		entry.model = static_cast<std::int32_t>(readU32(packet->data, 52));
+		entry.order = static_cast<std::int32_t>(readU32(packet->data, 56));
+		const char* name = reinterpret_cast<const char*>(packet->data + 60);
+		entry.name.assign(name, strnlen(name, rosterPacketSize - 60));
+		if ( static_cast<RosterPacketKind>(packet->data[5])
+			== RosterPacketKind::Remove )
+		{
+			sharedFollowerRoster.erase(entry.uid);
+		}
+		else
+		{
+			sharedFollowerRoster.upsert(entry);
+		}
 	}
 
 	void processQualityPacket(const UdpPacket* packet)
@@ -761,6 +1016,11 @@ namespace
 				{
 					queueReliable(PacketKind::ChestState, packet->address,
 						accepted, chestPayload(update));
+				}
+				for ( const auto& follower : publishedFollowerRoster.entries() )
+				{
+					queueRosterReliable(RosterPacketKind::Upsert, packet->address,
+						accepted, follower.second);
 				}
 			}
 			else if ( quality::minimap::reveal::acceptHostRequest(true, true,
@@ -828,6 +1088,7 @@ namespace
 	int udpSendHook(UdpSocket socket, const int channel, UdpPacket* packet)
 	{
 		const int result = udpSend(socket, channel, packet);
+		refreshFollowerRoster();
 		flushPendingPackets();
 		return result;
 	}
@@ -837,11 +1098,21 @@ namespace
 		for ( ;; )
 		{
 			const int result = udpRecv(socket, packet);
-			if ( result <= 0 || !isQualityPacket(packet) )
+			if ( result <= 0 )
 			{
 				return result;
 			}
-			processQualityPacket(packet);
+			if ( isQualityPacket(packet) )
+			{
+				processQualityPacket(packet);
+				continue;
+			}
+			if ( isRosterPacket(packet) )
+			{
+				processRosterPacket(packet);
+				continue;
+			}
+			return result;
 		}
 	}
 
@@ -2049,6 +2320,151 @@ namespace
 		inMinimapDraw = false;
 	}
 
+	std::uint8_t* getStatsHook(std::uint8_t* entity)
+	{
+		if ( inFollowerRosterDraw )
+		{
+			const auto found = syntheticFollowerStats.find(entity);
+			if ( found != syntheticFollowerStats.end() )
+			{
+				return found->second.data();
+			}
+		}
+		return originalGetStats ? originalGetStats(entity) : nullptr;
+	}
+
+	std::string msvcStringValue(const MsvcString& value)
+	{
+		const char* data = value.capacity > 15
+			? value.storage.heapData : value.storage.inlineData;
+		return data ? std::string(data, value.size) : std::string();
+	}
+
+	std::string localizedMonsterName(const int type)
+	{
+		if ( !getMonsterLocalizedName || !destroyMsvcString ) { return {}; }
+		MsvcString value;
+		getMonsterLocalizedName(&value, type, nullptr);
+		const std::string result = msvcStringValue(value);
+		destroyMsvcString(&value);
+		return result;
+	}
+
+	std::string rosterOwnerName(const int owner)
+	{
+		auto** playerStats = reinterpret_cast<std::uint8_t**>(base + layout::statsRva);
+		if ( owner < 0 || owner >= quality::follower_roster::maximumPlayers
+			|| !playerStats[owner] )
+		{
+			return {};
+		}
+		const char* name = reinterpret_cast<const char*>(playerStats[owner] + statName);
+		return std::string(name, strnlen(name, 127));
+	}
+
+	void makeSyntheticFollowerStats(std::uint8_t* entity,
+		const quality::follower_roster::Entry& entry)
+	{
+		auto& stats = syntheticFollowerStats[entity];
+		stats.fill(0);
+		field<std::int32_t>(stats.data(), statType) = entry.type;
+		field<std::int32_t>(stats.data(), statHp) = entry.hp;
+		field<std::int32_t>(stats.data(), statMaxHp) = entry.maxHp;
+		field<std::int32_t>(stats.data(), statMp) = 0;
+		field<std::int32_t>(stats.data(), statMaxMp) = 0;
+		field<std::int32_t>(stats.data(), statLevel) = entry.level;
+		std::string unitName = entry.name.empty()
+			? localizedMonsterName(entry.type) : entry.name;
+		unitName = quality::follower_roster::displayName(
+			rosterOwnerName(entry.owner), unitName, entry.owner);
+		const auto length = std::min<std::size_t>(unitName.size(), 127);
+		std::memcpy(stats.data() + statName, unitName.data(), length);
+		stats[statName + length] = 0;
+	}
+
+	void updateAllyFollowerFrameHook(const int player)
+	{
+		if ( !originalUpdateAllyFollowerFrame || player < 0
+			|| player >= quality::follower_roster::maximumPlayers )
+		{
+			return;
+		}
+		refreshFollowerRoster();
+		auto** playerStats = reinterpret_cast<std::uint8_t**>(base + layout::statsRva);
+		if ( !playerStats[player] )
+		{
+			originalUpdateAllyFollowerFrame(player);
+			return;
+		}
+
+		auto& realList = field<List>(playerStats[player], layout::statFollowers);
+		const List savedList = realList;
+		std::vector<std::uint32_t> uids;
+		for ( Node* node = realList.first; node; node = node->next )
+		{
+			auto* uidPointer = static_cast<std::uint32_t*>(node->element);
+			if ( uidPointer ) { uids.push_back(*uidPointer); }
+		}
+		const auto localCount = uids.size();
+		const auto remoteEntries = quality::follower_roster::visibleRemoteEntries(
+			sharedFollowerRoster.entries(), player);
+		for ( const auto& entry : remoteEntries )
+		{
+			if ( (base + clientDisconnectedRva)[entry.owner] ) { continue; }
+			auto* entity = findEntity(
+				*reinterpret_cast<List**>(base + mapCreaturesRva), entry.uid);
+			if ( !entity || skill(entity, skillMonsterAllyIndex) != entry.owner )
+			{
+				continue;
+			}
+			uids.push_back(entry.uid);
+			makeSyntheticFollowerStats(entity, entry);
+		}
+		if ( uids.size() == localCount )
+		{
+			syntheticFollowerStats.clear();
+			originalUpdateAllyFollowerFrame(player);
+			return;
+		}
+
+		std::vector<Node> nodes(uids.size());
+		List displayList {};
+		for ( std::size_t index = 0; index < nodes.size(); ++index )
+		{
+			nodes[index].previous = index ? &nodes[index - 1] : nullptr;
+			nodes[index].next = index + 1 < nodes.size() ? &nodes[index + 1] : nullptr;
+			nodes[index].list = &displayList;
+			nodes[index].element = &uids[index];
+			nodes[index].deconstructor = nullptr;
+			nodes[index].size = sizeof(std::uint32_t);
+		}
+		displayList.first = nodes.empty() ? nullptr : &nodes.front();
+		displayList.last = nodes.empty() ? nullptr : &nodes.back();
+
+		auto** recentEntity = reinterpret_cast<std::uint8_t**>(base
+			+ followerMenusRva + followerMenuStride * player
+			+ followerMenuRecentEntity);
+		auto* savedRecent = *recentEntity;
+		if ( !savedRecent || (field<std::uintptr_t>(savedRecent, entityBehavior)
+			== reinterpret_cast<std::uintptr_t>(base + actMonsterRva)
+			&& skill(savedRecent, skillMonsterAllyIndex) != player) )
+		{
+			auto** players = reinterpret_cast<std::uint8_t**>(base + layout::playersRva);
+			if ( players[player] )
+			{
+				*recentEntity = field<std::uint8_t*>(players[player], playerEntity);
+			}
+		}
+
+		realList = displayList;
+		inFollowerRosterDraw = true;
+		originalUpdateAllyFollowerFrame(player);
+		inFollowerRosterDraw = false;
+		realList = savedList;
+		*recentEntity = savedRecent;
+		syntheticFollowerStats.clear();
+	}
+
 	std::vector<std::uint8_t> absoluteJump(const void* destination)
 	{
 		std::vector<std::uint8_t> bytes = {0xFF, 0x25, 0, 0, 0, 0};
@@ -2186,6 +2602,10 @@ namespace
 			|| !matches(loadMapRva, loadMapSignature)
 			|| !matches(languageGetRva, languageGetSignature)
 			|| !matches(createDialogueRva, createDialogueSignature)
+			|| !matches(updateAllyFollowerFrameRva,
+				updateAllyFollowerFrameSignature)
+			|| !matches(getMonsterLocalizedNameRva,
+				getMonsterLocalizedNameSignature)
 			|| !matches(layout::getStatsRva, layout::getStatsSignature)
 			|| !matches(layout::monsterIsFriendlyForTooltipRva,
 				layout::monsterIsFriendlyForTooltipSignature)
@@ -2277,6 +2697,10 @@ namespace quality::minimap_runtime
 		languageGet = reinterpret_cast<LanguageGetFn>(base + languageGetRva);
 		createDialogue = reinterpret_cast<CreateDialogueFn>(base + createDialogueRva);
 		getStats = reinterpret_cast<GetStatsFn>(base + layout::getStatsRva);
+		getMonsterLocalizedName = reinterpret_cast<GetMonsterLocalizedNameFn>(
+			base + getMonsterLocalizedNameRva);
+		destroyMsvcString = reinterpret_cast<MsvcStringDestroyFn>(
+			base + layout::msvcStringDestroyRva);
 		monsterIsFriendlyForTooltip =
 			reinterpret_cast<MonsterIsFriendlyForTooltipFn>(
 				base + layout::monsterIsFriendlyForTooltipRva);
@@ -2287,7 +2711,12 @@ namespace quality::minimap_runtime
 			PAGE_EXECUTE_READWRITE);
 		loadMapTrampoline = VirtualAlloc(nullptr, 64, MEM_COMMIT | MEM_RESERVE,
 			PAGE_EXECUTE_READWRITE);
-		if ( !relayPage || !drawTrampoline || !loadMapTrampoline )
+		followerFrameTrampoline = VirtualAlloc(nullptr, 64,
+			MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+		getStatsTrampoline = VirtualAlloc(nullptr, 64,
+			MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+		if ( !relayPage || !drawTrampoline || !loadMapTrampoline
+			|| !followerFrameTrampoline || !getStatsTrampoline )
 		{
 			release();
 			return false;
@@ -2326,11 +2755,34 @@ namespace quality::minimap_runtime
 		std::memcpy(loadTrampoline + loadMapHookBytes, loadJumpBack.data(),
 			loadJumpBack.size());
 		originalLoadMap = reinterpret_cast<LoadMapFn>(loadTrampoline);
+		auto* followerTrampoline = static_cast<std::uint8_t*>(
+			followerFrameTrampoline);
+		std::memcpy(followerTrampoline, base + updateAllyFollowerFrameRva,
+			updateAllyFollowerFrameHookBytes);
+		const auto followerJumpBack = absoluteJump(base
+			+ updateAllyFollowerFrameRva + updateAllyFollowerFrameHookBytes);
+		std::memcpy(followerTrampoline + updateAllyFollowerFrameHookBytes,
+			followerJumpBack.data(), followerJumpBack.size());
+		originalUpdateAllyFollowerFrame =
+			reinterpret_cast<UpdateAllyFollowerFrameFn>(followerTrampoline);
+		auto* statsTrampoline = static_cast<std::uint8_t*>(getStatsTrampoline);
+		std::memcpy(statsTrampoline, base + layout::getStatsRva,
+			getStatsHookBytes);
+		const auto statsJumpBack = absoluteJump(base + layout::getStatsRva
+			+ getStatsHookBytes);
+		std::memcpy(statsTrampoline + getStatsHookBytes, statsJumpBack.data(),
+			statsJumpBack.size());
+		originalGetStats = reinterpret_cast<GetStatsFn>(statsTrampoline);
 
 		addPatch(patches, drawMinimapRva, drawMinimapSignature,
 			absoluteJump(reinterpret_cast<void*>(&drawMinimapHook)));
 		addPatch(patches, loadMapRva, loadMapSignature,
 			absoluteJump(reinterpret_cast<void*>(&loadMapHook)));
+		addPatch(patches, updateAllyFollowerFrameRva,
+			updateAllyFollowerFrameSignature,
+			absoluteJump(reinterpret_cast<void*>(&updateAllyFollowerFrameHook)));
+		addPatch(patches, layout::getStatsRva, layout::getStatsSignature,
+			absoluteJump(reinterpret_cast<void*>(&getStatsHook)));
 		for ( std::size_t index = 0; index < exitTooltipCallRvas.size(); ++index )
 		{
 			addPatch(patches, exitTooltipCallRvas[index], exitTooltipCalls[index],
@@ -2402,10 +2854,25 @@ namespace quality::minimap_runtime
 			loadMapTrampoline = nullptr;
 			originalLoadMap = nullptr;
 		}
+		if ( followerFrameTrampoline )
+		{
+			VirtualFree(followerFrameTrampoline, 0, MEM_RELEASE);
+			followerFrameTrampoline = nullptr;
+			originalUpdateAllyFollowerFrame = nullptr;
+		}
+		if ( getStatsTrampoline )
+		{
+			VirtualFree(getStatsTrampoline, 0, MEM_RELEASE);
+			getStatsTrampoline = nullptr;
+			originalGetStats = nullptr;
+		}
 		if ( relayPage )
 		{
 			VirtualFree(relayPage, 0, MEM_RELEASE);
 			relayPage = nullptr;
 		}
+		sharedFollowerRoster.reset();
+		publishedFollowerRoster.reset();
+		syntheticFollowerStats.clear();
 	}
 }

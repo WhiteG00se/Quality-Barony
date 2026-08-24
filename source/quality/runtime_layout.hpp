@@ -16,11 +16,17 @@ namespace quality::runtime::layout
 	constexpr std::uintptr_t monsterIsTinkeringCreationRva = 0x0034AE10;
 	constexpr std::uintptr_t monsterAllyGetPlayerLeaderRva = 0x003482F0;
 	constexpr std::uintptr_t monsterIsFriendlyForTooltipRva = 0x005F2A80;
+	constexpr std::uintptr_t checkEnemyRva = 0x0045A7C0;
+	constexpr std::uintptr_t checkFriendRva = 0x0045BA60;
+	constexpr std::uintptr_t friendlyFireProtectionRva = 0x004636E0;
+	constexpr std::uintptr_t friendlyFireProtectionContinueRva = 0x004636EE;
+	constexpr std::uintptr_t friendlyFireProtectionNullTargetRva = 0x0046375E;
 	constexpr std::uintptr_t statGetAttributeRva = 0x00340570;
 	constexpr std::uintptr_t msvcStringDestroyRva = 0x002C1D40;
 	constexpr std::uintptr_t steamAchievementEntityRva = 0x00646EA0;
 	constexpr std::uintptr_t compendiumEventUpdateRva = 0x003D4090;
 	constexpr std::uintptr_t actPlayerRva = 0x00355FE0;
+	constexpr std::uintptr_t actMonsterRva = 0x0032D4D0;
 
 	constexpr std::uintptr_t xpCaptureRva = 0x00457E45;
 	constexpr std::uintptr_t xpFollowerBlockRva = 0x00457FF3;
@@ -34,6 +40,7 @@ namespace quality::runtime::layout
 	constexpr std::uintptr_t statsRva = 0x010B3370;
 	constexpr std::uintptr_t clientDisconnectedRva = 0x01053908;
 	constexpr std::uintptr_t byExampleAchievementRva = 0x00AE4FB8;
+	constexpr std::uintptr_t serverFlagsRva = 0x00C28DD0;
 
 	constexpr std::size_t entitySkill = 0x288;
 	constexpr std::size_t entityBehavior = 0x1350;
@@ -42,6 +49,7 @@ namespace quality::runtime::layout
 	constexpr std::size_t statHp = 0x220;
 	constexpr std::size_t statExperience = 0x24C;
 	constexpr std::size_t statFollowers = 0x908;
+	constexpr std::size_t statEffects = 0x40;
 	constexpr std::size_t skillPlayerIndex = 2;
 	constexpr std::size_t skillMonsterAllySummonRank = 50;
 
@@ -53,6 +61,9 @@ namespace quality::runtime::layout
 	constexpr int mothSmall = 47;
 	constexpr int earthElemental = 48;
 	constexpr int duckSmall = 49;
+	constexpr std::size_t effectConfused = 3;
+	constexpr std::size_t effectDrunk = 4;
+	constexpr std::uint32_t serverFlagFriendlyFire = 1U << 1;
 
 	constexpr std::array<std::uint8_t, 23> awardXpEntrySignature = {
 		0x48, 0x85, 0xD2, 0x0F, 0x84, 0x9B, 0x2B, 0x00,
@@ -86,6 +97,18 @@ namespace quality::runtime::layout
 	constexpr std::array<std::uint8_t, 16> monsterIsFriendlyForTooltipSignature = {
 		0x48, 0x89, 0x5C, 0x24, 0x10, 0x48, 0x89, 0x6C,
 		0x24, 0x18, 0x56, 0x57, 0x41, 0x56, 0x48, 0x83,
+	};
+	constexpr std::array<std::uint8_t, 14> checkEnemySignature = {
+		0x48, 0x89, 0x5C, 0x24, 0x18, 0x55, 0x56,
+		0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56,
+	};
+	constexpr std::array<std::uint8_t, 14> checkFriendSignature = {
+		0x48, 0x89, 0x5C, 0x24, 0x18, 0x55, 0x56,
+		0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56,
+	};
+	constexpr std::array<std::uint8_t, 14> friendlyFireProtectionSignature = {
+		0x40, 0x53, 0x48, 0x83, 0xEC, 0x20, 0x48,
+		0x8B, 0xDA, 0x48, 0x85, 0xD2, 0x74, 0x70,
 	};
 	constexpr std::array<std::uint8_t, 16> statGetAttributeSignature = {
 		0x48, 0x89, 0x5C, 0x24, 0x20, 0x55, 0x56, 0x57,

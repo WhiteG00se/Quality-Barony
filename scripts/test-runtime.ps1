@@ -60,6 +60,13 @@ Write-Host 'Checking unsupported in-memory runtime signature rejection...'
     '--test-signature-rejection'
 if ($LASTEXITCODE -ne 0) { throw 'The runtime accepted an unsupported signature.' }
 
+Write-Host 'Checking unsupported in-memory friendly-fire signature rejection...'
+& $Launcher '--game-dir' $GameDir '--runtime-dll' $Runtime `
+    '--test-friendly-fire-signature-rejection'
+if ($LASTEXITCODE -ne 0) {
+    throw 'The runtime accepted an unsupported friendly-fire signature.'
+}
+
 Write-Host 'Checking unsupported in-memory minimap signature rejection...'
 & $Launcher '--game-dir' $GameDir '--runtime-dll' $Runtime `
     '--test-minimap-signature-rejection'

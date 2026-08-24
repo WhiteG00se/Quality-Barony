@@ -10,6 +10,7 @@
 #include "../quality/minimap_items.hpp"
 #include "../quality/minimap_reveal.hpp"
 #include "../quality/minimap_chests.hpp"
+#include "../quality/friendly_fire.hpp"
 
 namespace
 {
@@ -447,6 +448,82 @@ namespace
 		static_assert(locallyAuthoritative(1));
 		static_assert(!locallyAuthoritative(2));
 	}
+
+	void testFriendlyFirePolicy()
+	{
+		using quality::friendly_fire::ActorKind;
+		using quality::friendly_fire::Decision;
+		using quality::friendly_fire::friendshipDecision;
+		using quality::friendly_fire::hostilityDecision;
+		using quality::friendly_fire::impaired;
+		using quality::friendly_fire::protectionDecision;
+
+		constexpr auto independent = ActorKind::IndependentMonster;
+		constexpr auto sober = impaired(false, false);
+		constexpr auto confused = impaired(true, false);
+		constexpr auto drunk = impaired(false, true);
+		static_assert(!sober);
+		static_assert(confused);
+		static_assert(drunk);
+		static_assert(hostilityDecision(false, independent, independent, false)
+			== Decision::ForceFalse);
+		static_assert(friendshipDecision(false, independent, independent, false)
+			== Decision::ForceTrue);
+		static_assert(protectionDecision(false, independent, independent, false)
+			== Decision::ForceTrue);
+		static_assert(hostilityDecision(true, independent, independent, false)
+			== Decision::Preserve);
+		static_assert(friendshipDecision(true, independent, independent, false)
+			== Decision::Preserve);
+		static_assert(protectionDecision(true, independent, independent, false)
+			== Decision::Preserve);
+		static_assert(hostilityDecision(false, independent, independent,
+			confused)
+			== Decision::Preserve);
+		static_assert(friendshipDecision(false, independent, independent,
+			confused)
+			== Decision::Preserve);
+		static_assert(protectionDecision(false, independent, independent, confused)
+			== Decision::ForceFalse);
+		static_assert(hostilityDecision(false, independent, independent,
+			drunk)
+			== Decision::Preserve);
+		static_assert(friendshipDecision(false, independent, independent,
+			drunk)
+			== Decision::Preserve);
+		static_assert(confused && hostilityDecision(false, independent,
+			independent, sober) == Decision::ForceFalse);
+		static_assert(confused && friendshipDecision(false, independent,
+			independent, sober) == Decision::ForceTrue);
+		static_assert(drunk && hostilityDecision(false, independent,
+			independent, sober) == Decision::ForceFalse);
+		static_assert(drunk && friendshipDecision(false, independent,
+			independent, sober) == Decision::ForceTrue);
+		static_assert(protectionDecision(false, independent, independent, drunk)
+			== Decision::ForceFalse);
+		static_assert(protectionDecision(false, ActorKind::Player,
+			ActorKind::Player, confused) == Decision::ForceFalse);
+		static_assert(protectionDecision(false, ActorKind::Player,
+			ActorKind::PlayerAlly, drunk) == Decision::ForceFalse);
+		static_assert(protectionDecision(false, ActorKind::PlayerAlly,
+			ActorKind::Player, sober) == Decision::ForceTrue);
+		static_assert(protectionDecision(false, ActorKind::PlayerAlly,
+			ActorKind::PlayerAlly, sober) == Decision::ForceTrue);
+		static_assert(protectionDecision(false, ActorKind::PlayerAlly,
+			ActorKind::Player, confused) == Decision::ForceFalse);
+		static_assert(protectionDecision(false, ActorKind::PlayerAlly,
+			ActorKind::PlayerAlly, drunk) == Decision::ForceFalse);
+		static_assert(protectionDecision(true, ActorKind::PlayerAlly,
+			ActorKind::Player, sober) == Decision::Preserve);
+		static_assert(protectionDecision(false, ActorKind::Player,
+			ActorKind::PlayerAlly, sober) == Decision::Preserve);
+		static_assert(protectionDecision(false, ActorKind::PlayerAlly,
+			independent, drunk) == Decision::Preserve);
+		static_assert(protectionDecision(false, independent,
+			ActorKind::PlayerAlly, sober) == Decision::Preserve);
+		static_assert(hostilityDecision(false, independent,
+			ActorKind::Other, false) == Decision::Preserve);
+	}
 }
 
 int main()
@@ -516,6 +593,7 @@ int main()
 	testChestInteractionLifecycle();
 	testChestClosedChangesAndRemoteState();
 	testPartyItemEligibilityAndAuthority();
+	testFriendlyFirePolicy();
 	std::cout << "Quality runtime unit tests passed\n";
 	return 0;
 }

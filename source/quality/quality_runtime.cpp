@@ -11,6 +11,7 @@
 
 #include "runtime_layout.hpp"
 #include "runtime_patch.hpp"
+#include "friendly_fire.hpp"
 #include "minimap_runtime.hpp"
 #include "xp.hpp"
 
@@ -19,6 +20,7 @@ namespace
 	namespace layout = quality::runtime::layout;
 
 	constexpr std::size_t relayStride = 256;
+	constexpr std::size_t trampolineStride = 64;
 
 	struct Node
 	{
@@ -52,6 +54,7 @@ namespace
 	using AwardXpFn = void (*)(std::uint8_t*, std::uint8_t*, bool, bool);
 	using EntityMethodFn = void* (*)(std::uint8_t*);
 	using EntityBoolMethodFn = bool (*)(std::uint8_t*);
+	using EntityPairBoolMethodFn = bool (*)(std::uint8_t*, std::uint8_t*);
 	using EntityIntMethodFn = int (*)(std::uint8_t*);
 	using UidToEntityFn = std::uint8_t* (*)(std::uint32_t);
 	using StatGetAttributeFn = MsvcString* (*)(void*, MsvcString*, const MsvcString*);
@@ -64,6 +67,9 @@ namespace
 	EntityMethodFn getStats = nullptr;
 	EntityBoolMethodFn monsterIsTinkeringCreation = nullptr;
 	EntityMethodFn monsterAllyGetPlayerLeader = nullptr;
+	EntityPairBoolMethodFn originalCheckEnemy = nullptr;
+	EntityPairBoolMethodFn originalCheckFriend = nullptr;
+	EntityPairBoolMethodFn originalFriendlyFireProtection = nullptr;
 	EntityIntMethodFn entityInspiration = nullptr;
 	UidToEntityFn uidToEntity = nullptr;
 	StatGetAttributeFn statGetAttribute = nullptr;
@@ -72,6 +78,7 @@ namespace
 	CompendiumEventUpdateFn compendiumEventUpdate = nullptr;
 	void* relayPage = nullptr;
 	void* xpTrampoline = nullptr;
+	void* friendlyFireTrampolines = nullptr;
 
 	bool xpContextActive = false;
 	std::uint8_t* rootFollowerEntity = nullptr;
@@ -108,6 +115,117 @@ namespace
 	std::uintptr_t behavior(const std::uint8_t* entity)
 	{
 		return field<std::uintptr_t>(entity, layout::entityBehavior);
+	}
+
+	bool friendlyFireEnabled()
+	{
+		return field<std::uint32_t>(base, layout::serverFlagsRva)
+			& layout::serverFlagFriendlyFire;
+	}
+
+	quality::friendly_fire::ActorKind actorKind(std::uint8_t* entity)
+	{
+		using quality::friendly_fire::ActorKind;
+		if ( !entity )
+		{
+			return ActorKind::Other;
+		}
+		const auto entityBehavior = behavior(entity);
+		if ( entityBehavior == reinterpret_cast<std::uintptr_t>(
+			base + layout::actPlayerRva) )
+		{
+			return ActorKind::Player;
+		}
+		if ( entityBehavior != reinterpret_cast<std::uintptr_t>(
+			base + layout::actMonsterRva) )
+		{
+			return ActorKind::Other;
+		}
+		if ( !getStats(entity) )
+		{
+			return ActorKind::Other;
+		}
+		return monsterAllyGetPlayerLeader(entity)
+			? ActorKind::PlayerAlly
+			: ActorKind::IndependentMonster;
+	}
+
+	bool entityImpaired(std::uint8_t* entity)
+	{
+		if ( !entity )
+		{
+			return false;
+		}
+		auto* stats = static_cast<std::uint8_t*>(getStats(entity));
+		return stats && quality::friendly_fire::impaired(
+			field<std::uint8_t>(stats,
+				layout::statEffects + layout::effectConfused) != 0,
+			field<std::uint8_t>(stats,
+				layout::statEffects + layout::effectDrunk) != 0);
+	}
+
+	bool decisionValue(const quality::friendly_fire::Decision decision,
+		const bool original)
+	{
+		switch ( decision )
+		{
+			case quality::friendly_fire::Decision::ForceFalse:
+				return false;
+			case quality::friendly_fire::Decision::ForceTrue:
+				return true;
+			case quality::friendly_fire::Decision::Preserve:
+			default:
+				return original;
+		}
+	}
+
+	bool checkEnemyHook(std::uint8_t* entity, std::uint8_t* target)
+	{
+		if ( friendlyFireEnabled() )
+		{
+			return originalCheckEnemy(entity, target);
+		}
+		const auto decision = quality::friendly_fire::hostilityDecision(
+			false, actorKind(entity), actorKind(target),
+			entityImpaired(entity));
+		if ( decision != quality::friendly_fire::Decision::Preserve )
+		{
+			return decisionValue(decision, false);
+		}
+		return originalCheckEnemy(entity, target);
+	}
+
+	bool checkFriendHook(std::uint8_t* entity, std::uint8_t* target)
+	{
+		if ( friendlyFireEnabled() )
+		{
+			return originalCheckFriend(entity, target);
+		}
+		const auto decision = quality::friendly_fire::friendshipDecision(
+			false, actorKind(entity), actorKind(target),
+			entityImpaired(entity));
+		if ( decision != quality::friendly_fire::Decision::Preserve )
+		{
+			return decisionValue(decision, false);
+		}
+		return originalCheckFriend(entity, target);
+	}
+
+	bool friendlyFireProtectionHook(std::uint8_t* entity,
+		std::uint8_t* target)
+	{
+		if ( friendlyFireEnabled() )
+		{
+			return originalFriendlyFireProtection(entity, target);
+		}
+		const auto decision = quality::friendly_fire::protectionDecision(
+			false, actorKind(entity), actorKind(target),
+			entityImpaired(entity));
+		if ( decision != quality::friendly_fire::Decision::Preserve )
+		{
+			return decisionValue(decision, false);
+		}
+		return originalFriendlyFireProtection(entity, target);
 	}
 
 	bool attributeNotEmpty(std::uint8_t* stats, const char* name)
@@ -325,6 +443,32 @@ namespace
 		return bytes;
 	}
 
+	void prepareOrdinaryTrampoline(std::uint8_t* trampoline,
+		const std::uintptr_t rva, const std::size_t overwrittenBytes)
+	{
+		std::memcpy(trampoline, base + rva, overwrittenBytes);
+		const auto jumpBack = absoluteJump(base + rva + overwrittenBytes);
+		std::memcpy(trampoline + overwrittenBytes, jumpBack.data(),
+			jumpBack.size());
+	}
+
+	void prepareFriendlyFireProtectionTrampoline(std::uint8_t* trampoline)
+	{
+		constexpr std::size_t instructionsBeforeBranch = 12;
+		std::memcpy(trampoline, base + layout::friendlyFireProtectionRva,
+			instructionsBeforeBranch);
+		std::vector<std::uint8_t> code(trampoline,
+			trampoline + instructionsBeforeBranch);
+		code.insert(code.end(), { 0x75, 0x0E });
+		const auto nullTarget = absoluteJump(
+			base + layout::friendlyFireProtectionNullTargetRva);
+		code.insert(code.end(), nullTarget.begin(), nullTarget.end());
+		const auto continuation = absoluteJump(
+			base + layout::friendlyFireProtectionContinueRva);
+		code.insert(code.end(), continuation.begin(), continuation.end());
+		std::memcpy(trampoline, code.data(), code.size());
+	}
+
 	std::vector<std::uint8_t> relativeBranch(const std::uintptr_t fromRva,
 		const void* destination, const std::uint8_t opcode)
 	{
@@ -484,6 +628,14 @@ namespace
 
 	void releaseAllocations()
 	{
+		if ( friendlyFireTrampolines )
+		{
+			VirtualFree(friendlyFireTrampolines, 0, MEM_RELEASE);
+			friendlyFireTrampolines = nullptr;
+			originalCheckEnemy = nullptr;
+			originalCheckFriend = nullptr;
+			originalFriendlyFireProtection = nullptr;
+		}
 		if ( xpTrampoline )
 		{
 			VirtualFree(xpTrampoline, 0, MEM_RELEASE);
@@ -516,6 +668,10 @@ namespace
 				layout::monsterIsTinkeringCreationSignature)
 			&& matches(layout::monsterAllyGetPlayerLeaderRva,
 				layout::monsterAllyGetPlayerLeaderSignature)
+			&& matches(layout::checkEnemyRva, layout::checkEnemySignature)
+			&& matches(layout::checkFriendRva, layout::checkFriendSignature)
+			&& matches(layout::friendlyFireProtectionRva,
+				layout::friendlyFireProtectionSignature)
 			&& matches(layout::statGetAttributeRva, layout::statGetAttributeSignature)
 			&& matches(layout::msvcStringDestroyRva, layout::msvcStringDestroySignature)
 			&& matches(layout::steamAchievementEntityRva,
@@ -571,7 +727,7 @@ namespace
 		base = reinterpret_cast<std::uint8_t*>(GetModuleHandleW(nullptr));
 		if ( !base || !validateLayout() )
 		{
-			debug("Barony v5.0.2 EXP layout mismatch");
+			debug("Barony v5.0.2 runtime layout mismatch");
 			return false;
 		}
 
@@ -595,9 +751,11 @@ namespace
 		relayPage = allocateNearModule(3 * relayStride);
 		xpTrampoline = VirtualAlloc(nullptr, 64, MEM_COMMIT | MEM_RESERVE,
 			PAGE_EXECUTE_READWRITE);
-		if ( !relayPage || !xpTrampoline )
+		friendlyFireTrampolines = VirtualAlloc(nullptr, 3 * trampolineStride,
+			MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+		if ( !relayPage || !xpTrampoline || !friendlyFireTrampolines )
 		{
-			debug("EXP hook allocation failed");
+			debug("Runtime hook allocation failed");
 			releaseAllocations();
 			return false;
 		}
@@ -631,6 +789,23 @@ namespace
 			jumpBack.data(), jumpBack.size());
 		originalAwardXp = reinterpret_cast<AwardXpFn>(trampoline);
 
+		auto* friendlyTrampolines = static_cast<std::uint8_t*>(
+			friendlyFireTrampolines);
+		auto* enemyTrampoline = friendlyTrampolines;
+		auto* friendTrampoline = friendlyTrampolines + trampolineStride;
+		auto* protectionTrampoline = friendlyTrampolines + 2 * trampolineStride;
+		prepareOrdinaryTrampoline(enemyTrampoline, layout::checkEnemyRva,
+			layout::checkEnemySignature.size());
+		prepareOrdinaryTrampoline(friendTrampoline, layout::checkFriendRva,
+			layout::checkFriendSignature.size());
+		prepareFriendlyFireProtectionTrampoline(protectionTrampoline);
+		originalCheckEnemy = reinterpret_cast<EntityPairBoolMethodFn>(
+			enemyTrampoline);
+		originalCheckFriend = reinterpret_cast<EntityPairBoolMethodFn>(
+			friendTrampoline);
+		originalFriendlyFireProtection = reinterpret_cast<EntityPairBoolMethodFn>(
+			protectionTrampoline);
+
 		std::vector<Patch> patches;
 		const auto addPatch = [&](const std::uintptr_t rva, const auto& expected,
 			std::vector<std::uint8_t> replacement) {
@@ -645,6 +820,13 @@ namespace
 
 		addPatch(layout::awardXpHookRva, layout::awardXpHookSignature,
 			absoluteJump(reinterpret_cast<void*>(&awardXpHook)));
+		addPatch(layout::checkEnemyRva, layout::checkEnemySignature,
+			absoluteJump(reinterpret_cast<void*>(&checkEnemyHook)));
+		addPatch(layout::checkFriendRva, layout::checkFriendSignature,
+			absoluteJump(reinterpret_cast<void*>(&checkFriendHook)));
+		addPatch(layout::friendlyFireProtectionRva,
+			layout::friendlyFireProtectionSignature,
+			absoluteJump(reinterpret_cast<void*>(&friendlyFireProtectionHook)));
 		addPatch(layout::xpCaptureRva, layout::xpCaptureSignature,
 			relativeBranch(layout::xpCaptureRva, captureRelay, 0xE8));
 		auto followerJump = relativeBranch(layout::xpFollowerBlockRva,
@@ -682,7 +864,7 @@ namespace
 				|| std::memcmp(base + patch.rva, patch.expected.data(),
 					patch.expected.size()) != 0 )
 			{
-				debug("EXP patch transaction preflight failed");
+				debug("Runtime patch transaction preflight failed");
 				releaseAllocations();
 				return false;
 			}
@@ -693,12 +875,12 @@ namespace
 			{
 				rollback(patches);
 				releaseAllocations();
-				debug("EXP patch transaction rolled back");
+				debug("Runtime patch transaction rolled back");
 				return false;
 			}
 		}
 
-		debug("Quality EXP and minimap appearance runtime installed for Barony v5.0.2");
+		debug("Quality EXP, friendly fire, and minimap runtime installed for Barony v5.0.2");
 		return true;
 	}
 }

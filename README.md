@@ -14,6 +14,13 @@
 ~~Vanilla~~ | unchanged | `Quality`
 
 <details>
+<summary><strong>Generic Changes</strong></summary>
+
+- <code>When friendly fire is disabled, non-player units other than followers and summons no longer treat one another as hostile and cannot damage one another. A Confused or Drunk attacker retains vanilla hostility and bypasses friendly-fire protection. Players and their followers or summons also bypass friendly-fire protection while Confused or Drunk.</code>
+
+</details>
+
+<details>
 <summary><strong>EXP Multipliers</strong></summary>
 
 | EXP Receiver | Range | Solo | 2 players | 3 players | 4 players |

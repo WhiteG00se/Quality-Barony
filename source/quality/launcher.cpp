@@ -24,6 +24,7 @@ namespace
 		"8566DA37BC39EA5A1ED08A8AD57608AF4F019FB415869258FB3C1D310B4419E4";
 	constexpr char initializerName[] = "QualityBaronyInitialize";
 	constexpr std::uintptr_t xpCaptureRva = 0x00457E45;
+	constexpr std::uintptr_t checkEnemyRva = 0x0045A7C0;
 	constexpr std::uintptr_t drawMinimapRva = 0x00708070;
 	constexpr std::uintptr_t exitTooltipRva = 0x005F451B;
 	constexpr std::uintptr_t terrainImageDrawCallRva = 0x00708EAF;
@@ -592,6 +593,7 @@ namespace
 		std::wcout << L"Quality Barony Launcher for Barony v5.0.2 x64\n\n"
 			L"Usage: QualityBaronyLauncher.exe [--game-dir PATH] "
 			L"[--verify-only|--test-injection|--test-signature-rejection|"
+			L"--test-friendly-fire-signature-rejection|"
 			L"--test-minimap-signature-rejection|--test-reveal-signature-rejection|"
 			L"--test-item-marker-signature-rejection] "
 			L"[Barony arguments...]\n"
@@ -607,6 +609,7 @@ int wmain(int argc, wchar_t** argv)
 	bool verifyOnly = false;
 	bool injectionTest = false;
 	bool signatureRejectionTest = false;
+	bool friendlyFireSignatureRejectionTest = false;
 	bool minimapSignatureRejectionTest = false;
 	bool revealSignatureRejectionTest = false;
 	bool itemMarkerSignatureRejectionTest = false;
@@ -648,6 +651,10 @@ int wmain(int argc, wchar_t** argv)
 		else if ( argument == L"--test-signature-rejection" )
 		{
 			signatureRejectionTest = true;
+		}
+		else if ( argument == L"--test-friendly-fire-signature-rejection" )
+		{
+			friendlyFireSignatureRejectionTest = true;
 		}
 		else if ( argument == L"--test-minimap-signature-rejection" )
 		{
@@ -713,7 +720,8 @@ int wmain(int argc, wchar_t** argv)
 		return 6;
 	}
 
-	if ( injectionTest || signatureRejectionTest || minimapSignatureRejectionTest
+	if ( injectionTest || signatureRejectionTest
+		|| friendlyFireSignatureRejectionTest || minimapSignatureRejectionTest
 		|| revealSignatureRejectionTest || itemMarkerSignatureRejectionTest )
 	{
 		std::wstring commandLine = quoteArgument(executable.wstring());
@@ -733,16 +741,19 @@ int wmain(int argc, wchar_t** argv)
 		const FoundProcess found { process.hProcess, process.dwProcessId };
 		std::wstring error;
 		const bool rejectionTest = signatureRejectionTest
+			|| friendlyFireSignatureRejectionTest
 			|| minimapSignatureRejectionTest || revealSignatureRejectionTest
 			|| itemMarkerSignatureRejectionTest;
-		const std::uintptr_t corruptRva = itemMarkerSignatureRejectionTest
-			? terrainImageDrawCallRva
+		const std::uintptr_t corruptRva = friendlyFireSignatureRejectionTest
+			? checkEnemyRva
+			: (itemMarkerSignatureRejectionTest ? terrainImageDrawCallRva
 			: (revealSignatureRejectionTest ? exitTooltipRva
-			: (minimapSignatureRejectionTest ? drawMinimapRva : xpCaptureRva));
-		const wchar_t* corruptName = itemMarkerSignatureRejectionTest
-			? L"party item marker"
+			: (minimapSignatureRejectionTest ? drawMinimapRva : xpCaptureRva)));
+		const wchar_t* corruptName = friendlyFireSignatureRejectionTest
+			? L"friendly fire"
+			: (itemMarkerSignatureRejectionTest ? L"party item marker"
 			: (revealSignatureRejectionTest ? L"exit reveal"
-			: (minimapSignatureRejectionTest ? L"minimap" : L"EXP"));
+			: (minimapSignatureRejectionTest ? L"minimap" : L"EXP")));
 		if ( rejectionTest && !corruptSignatureForTest(found, corruptRva,
 			corruptName, error) )
 		{

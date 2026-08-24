@@ -10,6 +10,7 @@
 #include "../quality/minimap_items.hpp"
 #include "../quality/minimap_reveal.hpp"
 #include "../quality/minimap_chests.hpp"
+#include "../quality/minimap_creatures.hpp"
 #include "../quality/friendly_fire.hpp"
 #include "../quality/follower_roster.hpp"
 #include "../quality/xp_participation.hpp"
@@ -178,6 +179,8 @@ namespace
 			== ExitCreatureDisposition::Excluded);
 
 		std::array<char, 128> text {};
+		quality::minimap::formatCreatureCounts(text.data(), text.size(), 2, 5);
+		assert(std::string(text.data()) == "2 hostiles / 5 neutrals alive");
 		quality::minimap::formatExitTooltip(text.data(), text.size(),
 			"Exit dungeon floor", 0, 0);
 		assert(std::string(text.data())
@@ -595,6 +598,98 @@ namespace
 		assert(!excludedVictim.qualified());
 		assert(!excludedVictim.claimPartyXp(true, ActorKind::PlayerAlly, true));
 	}
+
+	void testCreatureVisionAndFinalReveal()
+	{
+		using namespace quality::minimap::creatures;
+		constexpr double pi = 3.14159265358979323846;
+		assert(inForwardHalfPlane(0, 0, 0, 10, 0));
+		assert(inForwardHalfPlane(0, 0, 0, 0, 10));
+		assert(inForwardHalfPlane(0, 0, 0, 0, -10));
+		assert(!inForwardHalfPlane(0, 0, 0, -0.001, 10));
+		assert(!inForwardHalfPlane(0, 0, pi, 10, 0));
+		assert(acceptSightingSnapshot(true, true, true, true, 3, 2));
+		assert(acceptSightingSnapshot(true, true, true, true, 2, 2));
+		assert(!acceptSightingSnapshot(true, true, true, true, 1, 2));
+		assert(!acceptSightingSnapshot(true, true, false, true, 3, 2));
+		assert(!acceptSightingSnapshot(false, true, true, true, 3, 2));
+		assert(!acceptSightingSnapshot(true, false, true, true, 3, 2));
+		assert(!acceptSightingSnapshot(true, true, true, false, 3, 2));
+		assert(ordinarySightingVisible(Disposition::Hostile,
+			false, false, true, true));
+		assert(!ordinarySightingVisible(Disposition::Hostile,
+			true, false, true, true));
+		assert(ordinarySightingVisible(Disposition::Hostile,
+			true, true, true, true));
+		assert(!ordinarySightingVisible(Disposition::Neutral,
+			false, false, true, true));
+		assert(!ordinarySightingVisible(Disposition::Hostile,
+			false, false, false, true));
+		assert(!ordinarySightingVisible(Disposition::Hostile,
+			false, false, true, false));
+
+		const std::array<std::array<bool, 5>, 5> walls {{
+			{{false, false, false, false, false}},
+			{{false, false, false, false, false}},
+			{{false, false, true,  false, false}},
+			{{false, false, false, false, false}},
+			{{false, false, false, false, false}},
+		}};
+		auto blocked = [&](const int x, const int y)
+		{
+			return x < 0 || y < 0 || x >= 5 || y >= 5
+				|| walls[static_cast<std::size_t>(y)][static_cast<std::size_t>(x)];
+		};
+		assert(clearTileLine(0.5, 0.5, 4.5, 0.5, blocked));
+		assert(!clearTileLine(0.5, 2.5, 4.5, 2.5, blocked));
+		assert(!clearTileLine(0.5, 0.5, 4.5, 4.5, blocked));
+		assert(segmentIntersectsBeforeTarget(0, 0, 10, 0,
+			{4, -1, 6, 1}));
+		assert(!segmentIntersectsBeforeTarget(0, 0, 10, 0,
+			{11, -1, 12, 1}));
+		const std::array<Blocker, 2> blockers {{
+			{11, -1, 12, 1}, {7, -1, 8, 1},
+		}};
+		assert(std::any_of(blockers.begin(), blockers.end(),
+			[](const Blocker& blocker)
+			{
+				return segmentIntersectsBeforeTarget(0, 0, 10, 0, blocker);
+			}));
+
+		FinalRevealState reveal;
+		assert(!reveal.update(2, 3));
+		reveal.activate();
+		assert(!reveal.update(3, 4));
+		assert(reveal.update(2, 4));
+		assert(reveal.latched());
+		assert(!reveal.update(5, 9));
+		int hostiles = 0;
+		int neutrals = 0;
+		assert(reveal.takeNotification(hostiles, neutrals));
+		assert(hostiles == 2 && neutrals == 4);
+		assert(!reveal.takeNotification(hostiles, neutrals));
+		FinalRevealState oneHostile;
+		oneHostile.activate();
+		assert(oneHostile.update(1, 0));
+		FinalRevealState zeroHostiles;
+		zeroHostiles.activate();
+		assert(zeroHostiles.update(0, 2));
+		reveal.reset();
+		assert(!reveal.activated() && !reveal.latched());
+
+		SightingUnion sightings;
+		assert(sightings.replace(0, 1, {10, 20}));
+		assert(sightings.replace(1, 1, {20, 30}));
+		assert(!sightings.replace(1, 1, {40}));
+		auto combined = sightings.combined();
+		assert(combined.size() == 3 && combined.count(10)
+			&& combined.count(20) && combined.count(30));
+		assert(sightings.replace(0, 2, {}));
+		combined = sightings.combined();
+		assert(combined.size() == 2 && !combined.count(10));
+		sightings.clearPlayer(1);
+		assert(sightings.combined().empty());
+	}
 }
 
 int main()
@@ -633,6 +728,7 @@ int main()
 	static_assert(quality::minimap::stationBlue == 0xFFFFDC8CU);
 	static_assert(quality::minimap::minotaurRed == 0xFF0000FFU);
 	static_assert(quality::minimap::shadowGray == 0xFFBFBFBFU);
+	static_assert(quality::minimap::detectedPurple == 0xFFBF7FBFU);
 	static_assert(quality::minimap::uninteractedGreen == 0xFF2F6B55U);
 	static_assert(quality::minimap::interactedBlue == 0xFFE16941U);
 	static_assert(quality::minimap::followerGhostScale == 0.7);
@@ -694,6 +790,7 @@ int main()
 	testPartyItemEligibilityAndAuthority();
 	testFriendlyFirePolicy();
 	testDamageParticipationPolicy();
+	testCreatureVisionAndFinalReveal();
 	std::cout << "Quality runtime unit tests passed\n";
 	return 0;
 }

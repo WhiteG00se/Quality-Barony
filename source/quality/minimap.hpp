@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <cstdio>
 #include <cstdint>
@@ -30,6 +31,7 @@ namespace quality::minimap
 	constexpr std::uint32_t playerPink = color(255, 160, 255);
 	constexpr std::uint32_t minotaurRed = color(255, 0, 0);
 	constexpr std::uint32_t shadowGray = color(191, 191, 191);
+	constexpr std::uint32_t detectedPurple = color(191, 127, 191);
 	constexpr std::uint32_t boulderCyan = color(0, 255, 255);
 	constexpr std::uint32_t stationBlue = color(140, 220, 255);
 	constexpr std::uint32_t uninteractedGreen = color(0x55, 0x6B, 0x2F);
@@ -88,6 +90,17 @@ namespace quality::minimap
 			: ExitCreatureDisposition::Hostile;
 	}
 
+	inline int formatCreatureCounts(char* output, const std::size_t outputSize,
+		const int hostiles, const int neutrals)
+	{
+		if ( !output || outputSize == 0 )
+		{
+			return -1;
+		}
+		return std::snprintf(output, outputSize,
+			"%d hostiles / %d neutrals alive", hostiles, neutrals);
+	}
+
 	inline int formatExitTooltip(char* output, const std::size_t outputSize,
 		const char* exitText, const int hostiles, const int neutrals)
 	{
@@ -95,9 +108,10 @@ namespace quality::minimap
 		{
 			return -1;
 		}
-		return std::snprintf(output, outputSize,
-			"%s\n%d hostiles / %d neutrals alive",
-			exitText ? exitText : "", hostiles, neutrals);
+		std::array<char, 64> counts {};
+		formatCreatureCounts(counts.data(), counts.size(), hostiles, neutrals);
+		return std::snprintf(output, outputSize, "%s\n%s",
+			exitText ? exitText : "", counts.data());
 	}
 
 	constexpr bool exitVisible(const std::uint8_t visibility,

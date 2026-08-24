@@ -18,6 +18,7 @@
 #include "minimap.hpp"
 #include "follower_roster.hpp"
 #include "minimap_chests.hpp"
+#include "minimap_creatures.hpp"
 #include "minimap_items.hpp"
 #include "minimap_reveal.hpp"
 #include "minimap_runtime.hpp"
@@ -39,6 +40,7 @@ namespace
 	constexpr std::uintptr_t loadMapRva = 0x004A7F10;
 	constexpr std::uintptr_t languageGetRva = 0x004D37B0;
 	constexpr std::uintptr_t createDialogueRva = 0x00840370;
+	constexpr std::uintptr_t messagePlayerRva = 0x005C34A0;
 	constexpr std::uintptr_t updateAllyFollowerFrameRva = 0x008859F0;
 	constexpr std::uintptr_t getMonsterLocalizedNameRva = 0x00340E90;
 	constexpr std::uintptr_t actPlayerRva = 0x00355FE0;
@@ -91,12 +93,15 @@ namespace
 	constexpr std::uintptr_t udpRecvIatRva = 0x00ACCD58;
 	constexpr std::uintptr_t udpSendIatRva = 0x00ACCD60;
 	constexpr std::uintptr_t mapRva = mapWidthRva - 64;
+	constexpr std::uintptr_t clientnumRva = 0x01052DC8;
 	constexpr std::uintptr_t followerMenusRva = 0x00C28FB0;
 
 	constexpr std::size_t entityUid = 0x68;
 	constexpr std::size_t entityX = 0xD8;
 	constexpr std::size_t entityY = 0xE0;
 	constexpr std::size_t entityYaw = 0xF0;
+	constexpr std::size_t entitySizeX = 0x138;
+	constexpr std::size_t entitySizeY = 0x13C;
 	constexpr std::size_t entitySprite = 0x140;
 	constexpr std::size_t entitySkill = 0x288;
 	constexpr std::size_t entityFlags = 0x378;
@@ -104,6 +109,11 @@ namespace
 	constexpr std::size_t entityParent = 0x3B0;
 	constexpr std::size_t entityBehavior = 0x1350;
 	constexpr std::size_t playerEntity = 0x18;
+	constexpr std::size_t playerCamera = 0x08;
+	constexpr std::size_t cameraX = 0x00;
+	constexpr std::size_t cameraY = 0x08;
+	constexpr std::size_t cameraYaw = 0x18;
+	constexpr std::size_t mapTiles = 0x90;
 	constexpr std::size_t skillPlayerIndex = 2;
 	constexpr std::size_t skillMonsterAllyIndex = 42;
 	constexpr std::size_t skillShadowTaggedUid = 54;
@@ -161,6 +171,10 @@ namespace
 	constexpr std::array<std::uint8_t, 16> createDialogueSignature = {
 		0x48, 0x8B, 0xC4, 0x4C, 0x89, 0x48, 0x20, 0x55,
 		0x53, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41,
+	};
+	constexpr std::array<std::uint8_t, 16> messagePlayerSignature = {
+		0x4C, 0x8B, 0xDC, 0x4D, 0x89, 0x43, 0x18, 0x4D,
+		0x89, 0x4B, 0x20, 0x53, 0x56, 0x57, 0x48, 0x81,
 	};
 	constexpr std::array<std::uint8_t, 16> updateAllyFollowerFrameSignature = {
 		0x48, 0x8B, 0xC4, 0x48, 0x89, 0x58, 0x10, 0x48,
@@ -258,7 +272,7 @@ namespace
 	enum class VisualKind
 	{
 		Exit, Boulder, Workbench, Cauldron, Minotaur, ShadowCreature,
-		Player, Follower, Unused,
+		Player, Follower, DetectedCreature, Unused,
 	};
 
 	struct Visual
@@ -291,6 +305,7 @@ namespace
 	using LoadMapFn = int (*)(const char*, void*, List*, List*, int*);
 	using LanguageGetFn = const char* (*)(int);
 	using CreateDialogueFn = void (*)(void*, std::uint32_t, int, const char*);
+	using MessagePlayerFn = bool (*)(int, std::uint32_t, const char*, ...);
 	using UdpSocket = void*;
 	struct IpAddress { std::uint32_t host; std::uint16_t port; };
 	struct UdpPacket
@@ -347,6 +362,7 @@ namespace
 	LoadMapFn originalLoadMap = nullptr;
 	LanguageGetFn languageGet = nullptr;
 	CreateDialogueFn createDialogue = nullptr;
+	MessagePlayerFn messagePlayer = nullptr;
 	UdpSendFn udpSend = nullptr;
 	UdpRecvFn udpRecv = nullptr;
 	UpdateAllyFollowerFrameFn originalUpdateAllyFollowerFrame = nullptr;
@@ -365,11 +381,26 @@ namespace
 	std::uintptr_t lastEntityList = 0;
 	std::uint32_t lastTicks = 0;
 	bool minotaurAlerted = false;
-	quality::minimap::reveal::State revealState;
+	std::array<quality::minimap::reveal::State,
+		quality::minimap::creatures::maximumPlayers> revealStates;
+	std::array<quality::minimap::creatures::FinalRevealState,
+		quality::minimap::creatures::maximumPlayers> finalRevealStates;
+	quality::minimap::creatures::SightingUnion localSightings;
+	std::array<std::uint32_t, quality::minimap::creatures::maximumPlayers>
+		localSightingSequences {};
+	std::unordered_set<std::uint32_t> receivedPartySightings;
 	std::vector<quality::minimap::reveal::Candidate> revealCandidates;
 	std::array<char, 512> exitTooltipText {};
-	std::pair<int, int> synchronizedExitCounts {};
-	bool synchronizedExitCountsValid = false;
+	std::array<std::pair<int, int>, quality::minimap::creatures::maximumPlayers>
+		synchronizedExitCounts {};
+	std::array<bool, quality::minimap::creatures::maximumPlayers>
+		synchronizedExitCountsValid {};
+	std::array<bool, quality::minimap::creatures::maximumPlayers>
+		exitRevealActivated {};
+	std::array<std::pair<int, int>, quality::minimap::creatures::maximumPlayers>
+		publishedExitCounts {};
+	std::array<bool, quality::minimap::creatures::maximumPlayers>
+		publishedExitCountsValid {};
 	quality::minimap::items::State partyItemState;
 	quality::minimap::chests::State chestState;
 	std::unordered_set<std::uint32_t> seenWorldItems;
@@ -495,6 +526,11 @@ namespace
 
 	constexpr std::size_t packetSize = 48;
 	constexpr std::size_t rosterPacketSize = 184;
+	constexpr std::size_t sightingPacketSize = 1024;
+	constexpr std::size_t sightingHeaderSize = 36;
+	constexpr std::size_t sightingUidsPerPacket =
+		(sightingPacketSize - sightingHeaderSize) / sizeof(std::uint32_t);
+	constexpr std::uint32_t sightingCapability = 0x43525331U; // CRS1
 	struct PendingPacket
 	{
 		std::vector<std::uint8_t> bytes;
@@ -508,6 +544,20 @@ namespace
 	std::unordered_map<std::uint32_t, PendingPacket> pendingPackets;
 	std::unordered_map<std::uint64_t, std::uint32_t> clientGenerations;
 	std::unordered_set<std::uint64_t> appliedPackets;
+	std::unordered_set<std::uint64_t> sightingCapableClients;
+	bool hostSightingCapable = false;
+	std::uint32_t partySightingSequence = 1;
+	std::uint32_t lastSightingPublishTick = 0;
+	struct SightingAssembly
+	{
+		std::uint32_t sequence = 0;
+		std::uint16_t chunkCount = 0;
+		std::vector<std::vector<std::uint32_t>> chunks;
+		std::vector<bool> received;
+	};
+	std::array<SightingAssembly, quality::minimap::creatures::maximumPlayers>
+		remoteSightingAssemblies;
+	SightingAssembly partySightingAssembly;
 	bool flushingPackets = false;
 
 	void writeU32(std::uint8_t* output, const std::size_t offset,
@@ -608,6 +658,99 @@ namespace
 		sendBytes(bytes.data(), bytes.size(), destination);
 	}
 
+	std::array<std::uint8_t, sightingPacketSize> makeSightingPacket(
+		const int reporter, const std::uint32_t sequence,
+		const std::uint32_t generation, const std::uint16_t chunkIndex,
+		const std::uint16_t chunkCount, const std::uint32_t* uids,
+		const std::uint16_t uidCount)
+	{
+		std::array<std::uint8_t, sightingPacketSize> bytes {};
+		bytes[0] = 'Q'; bytes[1] = 'M'; bytes[2] = 'S'; bytes[3] = 'I';
+		bytes[4] = 1;
+		bytes[5] = 1;
+		bytes[6] = *reinterpret_cast<std::uint8_t*>(base + secretLevelRva) ? 1 : 0;
+		bytes[7] = static_cast<std::uint8_t>(reporter);
+		writeU32(bytes.data(), 8, sequence);
+		writeU32(bytes.data(), 16, static_cast<std::uint32_t>(
+			*reinterpret_cast<std::int32_t*>(base + currentLevelRva)));
+		writeU32(bytes.data(), 20,
+			*reinterpret_cast<std::uint32_t*>(base + mapSeedRva));
+		writeU32(bytes.data(), 24, generation);
+		writeU16(bytes.data(), 28, chunkIndex);
+		writeU16(bytes.data(), 30, chunkCount);
+		writeU16(bytes.data(), 32, uidCount);
+		for ( std::uint16_t index = 0; index < uidCount; ++index )
+		{
+			writeU32(bytes.data(), sightingHeaderSize + index * 4, uids[index]);
+		}
+		return bytes;
+	}
+
+	void sendSightingSnapshot(const IpAddress destination,
+		const std::uint32_t generation, const int reporter,
+		std::uint32_t sequence, const std::unordered_set<std::uint32_t>& sightings)
+	{
+		if ( sequence == 0 ) { sequence = 1; }
+		std::vector<std::uint32_t> sorted(sightings.begin(), sightings.end());
+		std::sort(sorted.begin(), sorted.end());
+		const std::size_t chunks = std::max<std::size_t>(1,
+			(sorted.size() + sightingUidsPerPacket - 1) / sightingUidsPerPacket);
+		if ( chunks > UINT16_MAX ) { return; }
+		for ( std::size_t chunk = 0; chunk < chunks; ++chunk )
+		{
+			const std::size_t offset = chunk * sightingUidsPerPacket;
+			const auto count = static_cast<std::uint16_t>(std::min(
+				sightingUidsPerPacket, sorted.size() - std::min(offset, sorted.size())));
+			const std::uint32_t* first = count ? sorted.data() + offset : nullptr;
+			sendBytes(makeSightingPacket(reporter, sequence, generation,
+				static_cast<std::uint16_t>(chunk),
+				static_cast<std::uint16_t>(chunks), first, count), destination);
+		}
+	}
+
+	bool acceptSightingChunk(SightingAssembly& assembly,
+		const std::uint8_t* bytes, std::vector<std::uint32_t>& complete)
+	{
+		const auto sequence = readU32(bytes, 8);
+		const auto chunkIndex = readU16(bytes, 28);
+		const auto chunkCount = readU16(bytes, 30);
+		const auto uidCount = readU16(bytes, 32);
+		if ( sequence == 0 || chunkCount == 0 || chunkIndex >= chunkCount
+			|| uidCount > sightingUidsPerPacket || chunkCount > 256 )
+		{
+			return false;
+		}
+		if ( sequence < assembly.sequence ) { return false; }
+		if ( sequence > assembly.sequence || assembly.chunkCount != chunkCount )
+		{
+			assembly.sequence = sequence;
+			assembly.chunkCount = chunkCount;
+			assembly.chunks.assign(chunkCount, {});
+			assembly.received.assign(chunkCount, false);
+		}
+		if ( assembly.received[chunkIndex] ) { return false; }
+		auto& chunk = assembly.chunks[chunkIndex];
+		chunk.reserve(uidCount);
+		for ( std::uint16_t index = 0; index < uidCount; ++index )
+		{
+			const auto entityUid = readU32(bytes,
+				sightingHeaderSize + index * sizeof(std::uint32_t));
+			if ( entityUid ) { chunk.push_back(entityUid); }
+		}
+		assembly.received[chunkIndex] = true;
+		if ( std::find(assembly.received.begin(), assembly.received.end(), false)
+			!= assembly.received.end() )
+		{
+			return false;
+		}
+		complete.clear();
+		for ( const auto& part : assembly.chunks )
+		{
+			complete.insert(complete.end(), part.begin(), part.end());
+		}
+		return true;
+	}
+
 	void queueReliable(const PacketKind kind, const IpAddress destination,
 		const std::uint32_t generation,
 		const ItemPacketPayload payload = {})
@@ -705,14 +848,51 @@ namespace
 		flushingPackets = false;
 	}
 
-	void refreshRevealSnapshot();
+	void refreshRevealSnapshot(int viewer);
 	std::pair<int, int> exitCreatureCountsForViewer(int viewer);
+
+	bool validViewer(const int viewer)
+	{
+		return viewer >= 0
+			&& viewer < quality::minimap::creatures::maximumPlayers;
+	}
+
+	quality::minimap::reveal::State& revealForViewer(const int viewer)
+	{
+		return revealStates[validViewer(viewer) ? viewer : 0];
+	}
+
+	void markRevealUsedAll(const std::uint32_t entityUid)
+	{
+		for ( auto& state : revealStates ) { state.markUsed(entityUid); }
+	}
+
+	void observeRevealUsesAll(const std::uint32_t entityUid, const int uses)
+	{
+		for ( auto& state : revealStates ) { state.observeUses(entityUid, uses); }
+	}
+
+	bool anyRevealContains(const std::uint32_t entityUid)
+	{
+		for ( const auto& state : revealStates )
+		{
+			if ( state.contains(entityUid) ) { return true; }
+		}
+		return false;
+	}
+
+	void rebindRevealAll(const std::uint32_t oldUid,
+		const std::uint32_t newUid, const int x, const int y)
+	{
+		for ( auto& state : revealStates ) { state.rebind(oldUid, newUid, x, y); }
+	}
 
 	ItemPacketPayload exitCountsPayload(const int viewer)
 	{
 		const auto counts = exitCreatureCountsForViewer(viewer);
 		return {static_cast<std::uint32_t>(counts.first),
-			static_cast<std::uint32_t>(counts.second)};
+			static_cast<std::uint32_t>(counts.second),
+			static_cast<std::uint32_t>(viewer)};
 	}
 
 	void broadcastToReadyClients(const PacketKind kind,
@@ -766,6 +946,11 @@ namespace
 	quality::follower_roster::State collectFollowerRoster()
 	{
 		quality::follower_roster::State result;
+		auto* creatures = *reinterpret_cast<List**>(base + mapCreaturesRva);
+		if ( !creatures || !originalGetStats )
+		{
+			return result;
+		}
 		auto** playerStats = reinterpret_cast<std::uint8_t**>(base + layout::statsRva);
 		const auto* disconnected = base + clientDisconnectedRva;
 		for ( int owner = 0; owner < quality::follower_roster::maximumPlayers;
@@ -777,8 +962,7 @@ namespace
 			for ( Node* node = followers.first; node; node = node->next, ++order )
 			{
 				auto* uidPointer = static_cast<std::uint32_t*>(node->element);
-				auto* entity = uidPointer ? findEntity(
-					*reinterpret_cast<List**>(base + mapCreaturesRva), *uidPointer)
+				auto* entity = uidPointer ? findEntity(creatures, *uidPointer)
 					: nullptr;
 				auto* stats = entity ? originalGetStats(entity) : nullptr;
 				if ( !entity || !stats ) { continue; }
@@ -858,9 +1042,12 @@ namespace
 		}
 	}
 
-	void requestLocalRefresh()
+	void requestLocalRefresh(const int viewer)
 	{
-		refreshRevealSnapshot();
+		if ( !validViewer(viewer) ) { return; }
+		exitRevealActivated[viewer] = true;
+		finalRevealStates[viewer].activate();
+		refreshRevealSnapshot(viewer);
 		if ( multiplayerMode() == 2 )
 		{
 			queueReliable(PacketKind::Request,
@@ -870,10 +1057,22 @@ namespace
 
 	void resetRevealFloor()
 	{
-		revealState.reset();
+		for ( auto& state : revealStates ) { state.reset(); }
+		for ( auto& state : finalRevealStates ) { state.reset(); }
+		localSightings.reset();
+		localSightingSequences.fill(0);
+		receivedPartySightings.clear();
 		revealCandidates.clear();
-		synchronizedExitCounts = {};
-		synchronizedExitCountsValid = false;
+		synchronizedExitCounts.fill({});
+		synchronizedExitCountsValid.fill(false);
+		exitRevealActivated.fill(false);
+		publishedExitCountsValid.fill(false);
+		sightingCapableClients.clear();
+		hostSightingCapable = false;
+		partySightingSequence = 1;
+		lastSightingPublishTick = 0;
+		for ( auto& assembly : remoteSightingAssemblies ) { assembly = {}; }
+		partySightingAssembly = {};
 		partyItemState.reset();
 		chestState.reset();
 		seenWorldItems.clear();
@@ -893,7 +1092,8 @@ namespace
 		if ( multiplayerMode() == 2 )
 		{
 			queueReliable(PacketKind::Ready,
-				*reinterpret_cast<IpAddress*>(base + netServerRva), localGeneration);
+				*reinterpret_cast<IpAddress*>(base + netServerRva), localGeneration,
+				{sightingCapability});
 		}
 	}
 
@@ -916,6 +1116,64 @@ namespace
 				RosterPacketKind::Upsert)
 			&& packet->data[5] <= static_cast<std::uint8_t>(
 				RosterPacketKind::Remove);
+	}
+
+	bool isSightingPacket(const UdpPacket* packet)
+	{
+		return packet && packet->data
+			&& packet->len == static_cast<int>(sightingPacketSize)
+			&& std::memcmp(packet->data, "QMSI", 4) == 0
+			&& packet->data[4] == 1 && packet->data[5] == 1;
+	}
+
+	void processSightingPacket(const UdpPacket* packet)
+	{
+		const bool matchingFloor = floorMatches(packet->data);
+		std::vector<std::uint32_t> complete;
+		if ( multiplayerMode() == 1 )
+		{
+			auto* clients = *reinterpret_cast<IpAddress**>(base + netClientsPointerRva);
+			int player = -1;
+			for ( int index = 0; clients && index < 3; ++index )
+			{
+				if ( sameAddress(clients[index], packet->address) )
+				{
+					player = index + 1;
+					break;
+				}
+			}
+			const auto key = addressKey(packet->address);
+			const auto generation = clientGenerations.find(key);
+			if ( !validViewer(player) || generation == clientGenerations.end()
+				|| !quality::minimap::creatures::acceptSightingSnapshot(
+					sightingCapableClients.count(key) != 0, true, matchingFloor,
+					readU32(packet->data, 24) == generation->second,
+					readU32(packet->data, 8),
+					remoteSightingAssemblies[player].sequence) )
+			{
+				return;
+			}
+			if ( acceptSightingChunk(remoteSightingAssemblies[player],
+				packet->data, complete) )
+			{
+				localSightings.replace(player, readU32(packet->data, 8), complete);
+			}
+		}
+		else if ( multiplayerMode() == layout::multiplayerClient
+			&& quality::minimap::creatures::acceptSightingSnapshot(true,
+				sameAddress(packet->address,
+					*reinterpret_cast<IpAddress*>(base + netServerRva)),
+				matchingFloor, readU32(packet->data, 24) == localGeneration,
+				readU32(packet->data, 8), partySightingAssembly.sequence) )
+		{
+			hostSightingCapable = true;
+			if ( acceptSightingChunk(partySightingAssembly,
+				packet->data, complete) )
+			{
+				receivedPartySightings.clear();
+				receivedPartySightings.insert(complete.begin(), complete.end());
+			}
+		}
 	}
 
 	void processRosterPacket(const UdpPacket* packet)
@@ -1007,6 +1265,12 @@ namespace
 			{
 				// The same address can belong to a new session whose counter restarted.
 				accepted = generation;
+				if ( readU32(packet->data, 32) == sightingCapability )
+				{
+					sightingCapableClients.insert(addressKey(packet->address));
+					sendSightingSnapshot(packet->address, accepted, 0xFF,
+						partySightingSequence, localSightings.combined());
+				}
 				for ( const auto& marker : partyItemState.markers() )
 				{
 					queueReliable(PacketKind::ItemDropped, packet->address,
@@ -1026,6 +1290,8 @@ namespace
 			else if ( quality::minimap::reveal::acceptHostRequest(true, true,
 				generation, accepted) )
 			{
+				exitRevealActivated[requestingPlayer] = true;
+				publishedExitCountsValid[requestingPlayer] = false;
 				queueReliable(PacketKind::Refresh, packet->address, accepted,
 					exitCountsPayload(requestingPlayer));
 			}
@@ -1040,12 +1306,16 @@ namespace
 		{
 			if ( kind == PacketKind::Refresh )
 			{
-				synchronizedExitCounts = {
+				const int viewer = static_cast<int>(readU32(packet->data, 40));
+				if ( !validViewer(viewer) ) { return; }
+				synchronizedExitCounts[viewer] = {
 					static_cast<int>(readU32(packet->data, 32)),
 					static_cast<int>(readU32(packet->data, 36)),
 				};
-				synchronizedExitCountsValid = true;
-				refreshRevealSnapshot();
+				synchronizedExitCountsValid[viewer] = true;
+				exitRevealActivated[viewer] = true;
+				finalRevealStates[viewer].activate();
+				refreshRevealSnapshot(viewer);
 			}
 			else
 			{
@@ -1064,7 +1334,7 @@ namespace
 					chestState.apply(update);
 					if ( update.interacted )
 					{
-						revealState.markUsed(update.uid);
+						markRevealUsedAll(update.uid);
 					}
 				}
 				else if ( kind == PacketKind::ItemDropped )
@@ -1110,6 +1380,11 @@ namespace
 			if ( isRosterPacket(packet) )
 			{
 				processRosterPacket(packet);
+				continue;
+			}
+			if ( isSightingPacket(packet) )
+			{
+				processSightingPacket(packet);
 				continue;
 			}
 			return result;
@@ -1186,7 +1461,7 @@ namespace
 				candidate.kind = CandidateKind::Chest;
 				if ( skill(entity, 1) == 1 )
 				{
-					revealState.markUsed(entityUid);
+					markRevealUsedAll(entityUid);
 				}
 			}
 			else if ( sprite == 224 )
@@ -1197,13 +1472,13 @@ namespace
 			{
 				candidate.kind = CandidateKind::Fountain;
 				candidate.available = skill(entity, 0) > 0;
-				revealState.observeUses(entityUid, skill(entity, 0));
+				observeRevealUsesAll(entityUid, skill(entity, 0));
 			}
 			else if ( sprite == 164 )
 			{
 				candidate.kind = CandidateKind::Sink;
 				candidate.available = skill(entity, 0) > 0;
-				revealState.observeUses(entityUid, skill(entity, 0));
+				observeRevealUsesAll(entityUid, skill(entity, 0));
 			}
 			else if ( action == reinterpret_cast<std::uintptr_t>(
 				base + actColliderDecorationRva) )
@@ -1310,13 +1585,14 @@ namespace
 		}
 		for ( const auto& update : chestState.observeAuthoritative(observations) )
 		{
-			revealState.markUsed(update.uid);
+			markRevealUsedAll(update.uid);
 			broadcastChest(update);
 		}
 	}
 
-	void refreshRevealSnapshot()
+	void refreshRevealSnapshot(const int viewer)
 	{
+		if ( !validViewer(viewer) ) { return; }
 		auto* entities = *reinterpret_cast<List**>(base + mapEntitiesRva);
 		auto* creatures = *reinterpret_cast<List**>(base + mapCreaturesRva);
 		std::unordered_set<std::uint32_t> partyUids;
@@ -1339,7 +1615,7 @@ namespace
 			}
 		}
 		revealCandidates = collectRevealCandidates(entities, partyUids);
-		revealState.refresh(revealCandidates);
+		revealForViewer(viewer).refresh(revealCandidates);
 	}
 
 	int loadMapHook(const char* filename, void* destination, List* entities,
@@ -1404,10 +1680,6 @@ namespace
 
 	std::pair<int, int> exitCreatureCounts(std::uint8_t* worldUi)
 	{
-		if ( multiplayerMode() == 2 && synchronizedExitCountsValid )
-		{
-			return synchronizedExitCounts;
-		}
 		if ( !worldUi )
 		{
 			return {};
@@ -1417,17 +1689,28 @@ namespace
 		{
 			return {};
 		}
-		return exitCreatureCountsForViewer(
-			field<std::int32_t>(player, playerNumber));
+		const int viewer = field<std::int32_t>(player, playerNumber);
+		if ( multiplayerMode() == 2 && validViewer(viewer)
+			&& synchronizedExitCountsValid[viewer] )
+		{
+			return synchronizedExitCounts[viewer];
+		}
+		return exitCreatureCountsForViewer(viewer);
 	}
 
 	const char* exitTooltipHook(const int languageId, std::uint8_t* worldUi)
 	{
 		const char* text = languageGet(languageId);
-		if ( revealState.tooltipEdge(
+		int viewer = currentViewer;
+		if ( worldUi )
+		{
+			auto* player = field<std::uint8_t*>(worldUi, worldUiPlayer);
+			if ( player ) { viewer = field<std::int32_t>(player, playerNumber); }
+		}
+		if ( validViewer(viewer) && revealForViewer(viewer).tooltipEdge(
 			*reinterpret_cast<std::uint32_t*>(base + ticksRva)) )
 		{
-			requestLocalRefresh();
+			requestLocalRefresh(viewer);
 		}
 		const auto counts = exitCreatureCounts(worldUi);
 		quality::minimap::formatExitTooltip(exitTooltipText.data(),
@@ -1439,7 +1722,7 @@ namespace
 		const int type, const char* text)
 	{
 		createDialogue(dialogue, entityUid, type, text);
-		revealState.markUsed(entityUid);
+		markRevealUsedAll(entityUid);
 	}
 
 	void suppressVanilla(std::uint8_t* entity, const bool clearSprite)
@@ -1546,7 +1829,7 @@ namespace
 		std::unordered_set<std::uint32_t> reboundNewItems;
 		for ( const auto oldUid : seenWorldItems )
 		{
-			if ( liveItems.count(oldUid) || !revealState.contains(oldUid) )
+			if ( liveItems.count(oldUid) || !anyRevealContains(oldUid) )
 			{
 				continue;
 			}
@@ -1574,7 +1857,7 @@ namespace
 				if ( partyItemState.rebindOrdinary(oldUid, observation.uid,
 					observation.inventoryKey, observation.x, observation.y) )
 				{
-					revealState.rebind(oldUid, observation.uid,
+					rebindRevealAll(oldUid, observation.uid,
 						observation.x, observation.y);
 					reboundOldItems.insert(oldUid);
 					reboundNewItems.insert(observation.uid);
@@ -1662,6 +1945,206 @@ namespace
 		seenWorldItems = std::move(liveItems);
 	}
 
+	bool viewerPose(const int viewer, double& x, double& y, double& yaw,
+		std::uint8_t*& viewerEntity)
+	{
+		if ( !validViewer(viewer) ) { return false; }
+		auto** players = reinterpret_cast<std::uint8_t**>(base + layout::playersRva);
+		auto* player = players[viewer];
+		if ( !player ) { return false; }
+		auto* camera = field<std::uint8_t*>(player, playerCamera);
+		if ( !camera ) { return false; }
+		x = field<double>(camera, cameraX) * 16.0;
+		y = field<double>(camera, cameraY) * 16.0;
+		yaw = field<double>(camera, cameraYaw);
+		viewerEntity = field<std::uint8_t*>(player, playerEntity);
+		return std::isfinite(x) && std::isfinite(y) && std::isfinite(yaw);
+	}
+
+	bool creatureLineOfSight(const double originX, const double originY,
+		const double targetX, const double targetY, const std::uint8_t* viewerEntity,
+		const std::uint8_t* targetEntity, const List* entities)
+	{
+		const int width = *reinterpret_cast<int*>(base + mapWidthRva);
+		const int height = *reinterpret_cast<int*>(base + mapHeightRva);
+		auto* tiles = field<std::int32_t*>(base + mapRva, mapTiles);
+		if ( width <= 0 || height <= 0 || !tiles ) { return false; }
+		const bool clearTerrain = quality::minimap::creatures::clearTileLine(
+			originX / 16.0, originY / 16.0, targetX / 16.0, targetY / 16.0,
+			[&](const int x, const int y)
+			{
+				if ( x < 0 || y < 0 || x >= width || y >= height ) { return true; }
+				return tiles[1 + y * 3 + x * 3 * height] != 0;
+			});
+		if ( !clearTerrain || !entities ) { return clearTerrain && entities; }
+		for ( Node* node = entities->first; node; node = node->next )
+		{
+			auto* blocker = static_cast<std::uint8_t*>(node->element);
+			if ( !blocker || blocker == viewerEntity || blocker == targetEntity
+				|| !field<bool>(blocker, entityFlags + 8) )
+			{
+				continue;
+			}
+			const double blockerX = field<double>(blocker, entityX);
+			const double blockerY = field<double>(blocker, entityY);
+			const double sizeX = std::max(0, field<std::int32_t>(blocker, entitySizeX));
+			const double sizeY = std::max(0, field<std::int32_t>(blocker, entitySizeY));
+			const quality::minimap::creatures::Blocker bounds {
+				blockerX - sizeX, blockerY - sizeY,
+				blockerX + sizeX, blockerY + sizeY,
+			};
+			if ( originX >= bounds.minimumX && originX <= bounds.maximumX
+				&& originY >= bounds.minimumY && originY <= bounds.maximumY )
+			{
+				continue;
+			}
+			if ( quality::minimap::creatures::segmentIntersectsBeforeTarget(
+				originX, originY, targetX, targetY, bounds) )
+			{
+				return false;
+			}
+		}
+		return true;
+	}
+
+	quality::minimap::ExitCreatureDisposition creatureDisposition(
+		const int viewer, std::uint8_t* entity)
+	{
+		const bool monster = entity && behavior(entity)
+			== reinterpret_cast<std::uintptr_t>(base + actMonsterRva);
+		auto* stats = monster && getStats ? getStats(entity) : nullptr;
+		const int hp = stats ? field<std::int32_t>(stats, layout::statHp) : 0;
+		const int allyIndex = monster
+			? skill(entity, skillMonsterAllyIndex) : -1;
+		const bool friendly = monster && allyIndex < 0 && stats && hp > 0
+			&& monsterIsFriendlyForTooltip
+			&& monsterIsFriendlyForTooltip(viewer, entity);
+		return quality::minimap::classifyExitCreature(monster, allyIndex,
+			stats != nullptr, hp, friendly);
+	}
+
+	void updateFinalReveal(const int viewer)
+	{
+		if ( !validViewer(viewer) || !exitRevealActivated[viewer] ) { return; }
+		const auto counts = multiplayerMode() == layout::multiplayerClient
+			&& synchronizedExitCountsValid[viewer]
+			? synchronizedExitCounts[viewer] : exitCreatureCountsForViewer(viewer);
+		finalRevealStates[viewer].activate();
+		finalRevealStates[viewer].update(counts.first, counts.second);
+		int hostiles = 0;
+		int neutrals = 0;
+		if ( finalRevealStates[viewer].takeNotification(hostiles, neutrals)
+			&& messagePlayer )
+		{
+			std::array<char, 64> text {};
+			quality::minimap::formatCreatureCounts(text.data(), text.size(),
+				hostiles, neutrals);
+			messagePlayer(viewer, 1U << 9, "%s", text.data());
+		}
+	}
+
+	std::unordered_set<std::uint32_t> updateCreatureSightings(const int viewer,
+		List* entities, List* creatures)
+	{
+		std::vector<std::uint32_t> visible;
+		double originX = 0.0;
+		double originY = 0.0;
+		double yaw = 0.0;
+		std::uint8_t* viewerEntity = nullptr;
+		if ( viewerPose(viewer, originX, originY, yaw, viewerEntity) )
+		{
+			for ( Node* node = creatures ? creatures->first : nullptr;
+				node; node = node->next )
+			{
+				auto* entity = static_cast<std::uint8_t*>(node->element);
+				if ( creatureDisposition(viewer, entity)
+					!= quality::minimap::ExitCreatureDisposition::Hostile )
+				{
+					continue;
+				}
+				const double targetX = field<double>(entity, entityX);
+				const double targetY = field<double>(entity, entityY);
+				if ( quality::minimap::creatures::ordinarySightingVisible(
+					quality::minimap::creatures::Disposition::Hostile,
+					field<bool>(entity, entityFlags + 2),
+					field<bool>(entity, entityFlags + 16),
+					quality::minimap::creatures::inForwardHalfPlane(
+						originX, originY, yaw, targetX, targetY),
+					creatureLineOfSight(originX, originY, targetX, targetY,
+						viewerEntity, entity, entities)) )
+				{
+					visible.push_back(uid(entity));
+				}
+			}
+		}
+		auto& sequence = localSightingSequences[viewer];
+		if ( ++sequence == 0 ) { ++sequence; }
+		localSightings.replace(viewer, sequence, visible);
+		auto result = localSightings.combined();
+		result.insert(receivedPartySightings.begin(), receivedPartySightings.end());
+		return result;
+	}
+
+	void publishCreatureSightings()
+	{
+		const auto now = *reinterpret_cast<std::uint32_t*>(base + ticksRva);
+		if ( now - lastSightingPublishTick < 10U ) { return; }
+		lastSightingPublishTick = now;
+		if ( ++partySightingSequence == 0 ) { ++partySightingSequence; }
+		const auto combined = localSightings.combined();
+		if ( multiplayerMode() == layout::multiplayerClient )
+		{
+			if ( hostSightingCapable )
+			{
+				sendSightingSnapshot(*reinterpret_cast<IpAddress*>(base + netServerRva),
+					localGeneration, *reinterpret_cast<int*>(base + clientnumRva),
+					partySightingSequence, combined);
+			}
+			return;
+		}
+		if ( multiplayerMode() != 1 ) { return; }
+		auto* clients = *reinterpret_cast<IpAddress**>(base + netClientsPointerRva);
+		const auto* disconnected = base + clientDisconnectedRva;
+		for ( int player = 1; player < 4; ++player )
+		{
+			if ( disconnected[player] ) { localSightings.clearPlayer(player); }
+			if ( !clients || disconnected[player] ) { continue; }
+			const IpAddress destination = clients[player - 1];
+			const auto key = addressKey(destination);
+			const auto generation = clientGenerations.find(key);
+			if ( generation != clientGenerations.end()
+				&& sightingCapableClients.count(key) != 0 )
+			{
+				sendSightingSnapshot(destination, generation->second, 0xFF,
+					partySightingSequence, localSightings.combined());
+			}
+		}
+	}
+
+	void publishExitCountRefreshes()
+	{
+		if ( multiplayerMode() != 1 ) { return; }
+		auto* clients = *reinterpret_cast<IpAddress**>(base + netClientsPointerRva);
+		const auto* disconnected = base + clientDisconnectedRva;
+		for ( int player = 1; clients && player < 4; ++player )
+		{
+			if ( disconnected[player] || !exitRevealActivated[player] ) { continue; }
+			const auto counts = exitCreatureCountsForViewer(player);
+			if ( publishedExitCountsValid[player]
+				&& publishedExitCounts[player] == counts )
+			{
+				continue;
+			}
+			const IpAddress destination = clients[player - 1];
+			const auto generation = clientGenerations.find(addressKey(destination));
+			if ( generation == clientGenerations.end() ) { continue; }
+			publishedExitCounts[player] = counts;
+			publishedExitCountsValid[player] = true;
+			queueReliable(PacketKind::Refresh, destination, generation->second,
+				exitCountsPayload(player));
+		}
+	}
+
 	void observeWorld()
 	{
 		visuals.clear();
@@ -1713,8 +2196,28 @@ namespace
 		observePartyItems(entities, partyUids, partyEntities);
 		observeChests(entities);
 		revealCandidates = collectRevealCandidates(entities, partyUids);
-		revealState.observeLive(revealCandidates);
+		for ( auto& state : revealStates ) { state.observeLive(revealCandidates); }
 		flushPendingPackets();
+		updateFinalReveal(currentViewer);
+		const auto sharedSightings = updateCreatureSightings(currentViewer,
+			entities, creatures);
+		auto detectedCreatureUids = sharedSightings;
+		if ( finalRevealStates[currentViewer].latched() )
+		{
+			for ( Node* node = creatures->first; node; node = node->next )
+			{
+				auto* entity = static_cast<std::uint8_t*>(node->element);
+				const auto disposition = creatureDisposition(currentViewer, entity);
+				if ( disposition == quality::minimap::ExitCreatureDisposition::Hostile
+					|| disposition
+						== quality::minimap::ExitCreatureDisposition::Neutral )
+				{
+					detectedCreatureUids.insert(uid(entity));
+				}
+			}
+		}
+		publishCreatureSightings();
+		publishExitCountRefreshes();
 
 		for ( Node* node = entities->first; node; node = node->next )
 		{
@@ -1747,7 +2250,7 @@ namespace
 
 			if ( appearance == quality::minimap::MarkerAppearance::Exit )
 			{
-				if ( revealState.contains(uid(entity))
+				if ( revealForViewer(currentViewer).contains(uid(entity))
 					|| quality::minimap::exitVisible(visibility, showOnMap,
 						customPortal) )
 				{
@@ -1770,7 +2273,7 @@ namespace
 			if ( appearance == quality::minimap::MarkerAppearance::Workbench
 				|| appearance == quality::minimap::MarkerAppearance::Cauldron )
 			{
-				if ( explored || revealState.contains(uid(entity)) )
+				if ( explored || revealForViewer(currentViewer).contains(uid(entity)) )
 				{
 					visuals.push_back({appearance
 						== quality::minimap::MarkerAppearance::Workbench
@@ -1781,7 +2284,8 @@ namespace
 				continue;
 			}
 
-			if ( shadowTaggedUids.count(uid(entity)) && !partyUids.count(uid(entity)) )
+			if ( shadowTaggedUids.count(uid(entity)) && !partyUids.count(uid(entity))
+				&& detectedCreatureUids.count(uid(entity)) == 0 )
 			{
 				visuals.push_back({VisualKind::ShadowCreature, worldX / 16.0,
 					worldY / 16.0, 0.0, -1, true});
@@ -1792,7 +2296,7 @@ namespace
 			}
 		}
 
-		for ( const auto& marker : revealState.markers() )
+		for ( const auto& marker : revealForViewer(currentViewer).markers() )
 		{
 			if ( marker.kind == quality::minimap::reveal::Kind::Unused )
 			{
@@ -1813,15 +2317,22 @@ namespace
 			const double x = field<double>(entity, entityX) / 16.0;
 			const double y = field<double>(entity, entityY) / 16.0;
 			const double yaw = field<double>(entity, entityYaw);
+			if ( sprite == 239 && !minotaurAlerted && playSound )
+			{
+				playSound(116, 64);
+				minotaurAlerted = true;
+			}
+			if ( detectedCreatureUids.count(uid(entity)) )
+			{
+				visuals.push_back({VisualKind::DetectedCreature, x, y,
+					0.0, -1, false});
+				suppressVanilla(entity, false);
+				continue;
+			}
 			if ( sprite == 239 )
 			{
 				visuals.push_back({VisualKind::Minotaur, x, y, 0.0, -1, false});
 				suppressVanilla(entity, true);
-				if ( !minotaurAlerted && playSound )
-				{
-					playSound(116, 64);
-					minotaurAlerted = true;
-				}
 			}
 			else if ( action == reinterpret_cast<std::uintptr_t>(base + actPlayerRva) )
 			{
@@ -2256,6 +2767,10 @@ namespace
 				case VisualKind::ShadowCreature:
 					drawCircledSkull(marker, quality::minimap::shadowGray);
 					break;
+				case VisualKind::DetectedCreature:
+					circle(marker.x, marker.y, radius,
+						quality::minimap::detectedPurple, true);
+					break;
 				case VisualKind::Unused:
 					circle(marker.x, marker.y, radius,
 						quality::minimap::uninteractedGreen, true);
@@ -2602,6 +3117,7 @@ namespace
 			|| !matches(loadMapRva, loadMapSignature)
 			|| !matches(languageGetRva, languageGetSignature)
 			|| !matches(createDialogueRva, createDialogueSignature)
+			|| !matches(messagePlayerRva, messagePlayerSignature)
 			|| !matches(updateAllyFollowerFrameRva,
 				updateAllyFollowerFrameSignature)
 			|| !matches(getMonsterLocalizedNameRva,
@@ -2696,6 +3212,7 @@ namespace quality::minimap_runtime
 		playSound = reinterpret_cast<PlaySoundFn>(base + playSoundRva);
 		languageGet = reinterpret_cast<LanguageGetFn>(base + languageGetRva);
 		createDialogue = reinterpret_cast<CreateDialogueFn>(base + createDialogueRva);
+		messagePlayer = reinterpret_cast<MessagePlayerFn>(base + messagePlayerRva);
 		getStats = reinterpret_cast<GetStatsFn>(base + layout::getStatsRva);
 		getMonsterLocalizedName = reinterpret_cast<GetMonsterLocalizedNameFn>(
 			base + getMonsterLocalizedNameRva);
@@ -2713,8 +3230,9 @@ namespace quality::minimap_runtime
 			PAGE_EXECUTE_READWRITE);
 		followerFrameTrampoline = VirtualAlloc(nullptr, 64,
 			MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
-		getStatsTrampoline = VirtualAlloc(nullptr, 64,
-			MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+		// getStats begins with a RIP-relative reference to actMonster, so its
+		// trampoline must stay within rel32 range of the executable.
+		getStatsTrampoline = allocateNearModule(64);
 		if ( !relayPage || !drawTrampoline || !loadMapTrampoline
 			|| !followerFrameTrampoline || !getStatsTrampoline )
 		{
@@ -2768,6 +3286,23 @@ namespace quality::minimap_runtime
 		auto* statsTrampoline = static_cast<std::uint8_t*>(getStatsTrampoline);
 		std::memcpy(statsTrampoline, base + layout::getStatsRva,
 			getStatsHookBytes);
+		const auto statsRelativeTarget = reinterpret_cast<std::uintptr_t>(
+			base + actMonsterRva);
+		const auto statsRelativeNext = reinterpret_cast<std::uintptr_t>(
+			statsTrampoline + getStatsHookBytes);
+		const auto statsRelativeDifference = static_cast<std::intptr_t>(
+			statsRelativeTarget - statsRelativeNext);
+		const auto statsRelativeDisplacement = static_cast<std::int32_t>(
+			statsRelativeDifference);
+		if ( static_cast<std::intptr_t>(statsRelativeDisplacement)
+			!= statsRelativeDifference )
+		{
+			release();
+			return false;
+		}
+		// Displacement field of: 48 8D 15 xx xx xx xx.
+		std::memcpy(statsTrampoline + 10, &statsRelativeDisplacement,
+			sizeof(statsRelativeDisplacement));
 		const auto statsJumpBack = absoluteJump(base + layout::getStatsRva
 			+ getStatsHookBytes);
 		std::memcpy(statsTrampoline + getStatsHookBytes, statsJumpBack.data(),

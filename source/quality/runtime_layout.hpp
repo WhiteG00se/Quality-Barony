@@ -27,6 +27,11 @@ namespace quality::runtime::layout
 	constexpr std::uintptr_t compendiumEventUpdateRva = 0x003D4090;
 	constexpr std::uintptr_t actPlayerRva = 0x00355FE0;
 	constexpr std::uintptr_t actMonsterRva = 0x0032D4D0;
+	constexpr std::uintptr_t setHpRva = 0x00485380;
+	constexpr std::uintptr_t killedByMonsterObituaryHookRva = 0x0047E5B9;
+	constexpr std::uintptr_t updateEntityOnHitHookRva = 0x00350079;
+	constexpr std::uintptr_t updateEnemyBarRva = 0x00710600;
+	constexpr std::uintptr_t monsterCommittedDeathRva = 0x0032FDAE;
 
 	constexpr std::uintptr_t xpCaptureRva = 0x00457E45;
 	constexpr std::uintptr_t xpFollowerBlockRva = 0x00457FF3;
@@ -41,15 +46,19 @@ namespace quality::runtime::layout
 	constexpr std::uintptr_t clientDisconnectedRva = 0x01053908;
 	constexpr std::uintptr_t byExampleAchievementRva = 0x00AE4FB8;
 	constexpr std::uintptr_t serverFlagsRva = 0x00C28DD0;
+	constexpr std::uintptr_t multiplayerRva = 0x010538F4;
+	constexpr std::uintptr_t ticksRva = 0x010533E4;
 
 	constexpr std::size_t entitySkill = 0x288;
 	constexpr std::size_t entityBehavior = 0x1350;
+	constexpr std::size_t entityUid = 0x68;
 	constexpr std::size_t playerEntity = 0x18;
 	constexpr std::size_t statType = 0xE0;
 	constexpr std::size_t statHp = 0x220;
 	constexpr std::size_t statExperience = 0x24C;
 	constexpr std::size_t statFollowers = 0x908;
 	constexpr std::size_t statEffects = 0x40;
+	constexpr std::size_t statName = 0xEC;
 	constexpr std::size_t skillPlayerIndex = 2;
 	constexpr std::size_t skillMonsterAllySummonRank = 50;
 
@@ -64,6 +73,7 @@ namespace quality::runtime::layout
 	constexpr std::size_t effectConfused = 3;
 	constexpr std::size_t effectDrunk = 4;
 	constexpr std::uint32_t serverFlagFriendlyFire = 1U << 1;
+	constexpr int multiplayerClient = 2;
 
 	constexpr std::array<std::uint8_t, 23> awardXpEntrySignature = {
 		0x48, 0x85, 0xD2, 0x0F, 0x84, 0x9B, 0x2B, 0x00,
@@ -125,6 +135,27 @@ namespace quality::runtime::layout
 	constexpr std::array<std::uint8_t, 16> compendiumEventUpdateSignature = {
 		0x44, 0x89, 0x4C, 0x24, 0x20, 0x44, 0x89, 0x44,
 		0x24, 0x18, 0x89, 0x54, 0x24, 0x10, 0x55, 0x53,
+	};
+	constexpr std::array<std::uint8_t, 15> setHpSignature = {
+		0x48, 0x89, 0x5C, 0x24, 0x18, 0x48, 0x89, 0x6C,
+		0x24, 0x20, 0x57, 0x48, 0x83, 0xEC, 0x30,
+	};
+	constexpr std::array<std::uint8_t, 16> killedByMonsterObituaryHookSignature = {
+		0x48, 0x89, 0x5C, 0x24, 0x18, 0x55, 0x56, 0x57,
+		0x41, 0x56, 0x41, 0x57, 0x48, 0x83, 0xEC, 0x60,
+	};
+	constexpr std::array<std::uint8_t, 15> updateEntityOnHitHookSignature = {
+		0x48, 0x89, 0x5C, 0x24, 0x08, 0x48, 0x89, 0x6C,
+		0x24, 0x18, 0x48, 0x89, 0x74, 0x24, 0x20,
+	};
+	constexpr std::array<std::uint8_t, 18> updateEnemyBarSignature = {
+		0x40, 0x55, 0x53, 0x56, 0x57, 0x41, 0x54, 0x41,
+		0x55, 0x41, 0x56, 0x41, 0x57, 0x48, 0x8D, 0x6C,
+		0x24, 0xF9,
+	};
+	constexpr std::array<std::uint8_t, 14> monsterCommittedDeathSignature = {
+		0xBB, 0x01, 0x00, 0x00, 0x00, 0x44, 0x8B,
+		0xCB, 0x4D, 0x8B, 0xC5, 0x49, 0x8B, 0xD7,
 	};
 	constexpr std::array<std::uint8_t, 5> xpCaptureSignature = {
 		0xBB, 0x9F, 0x86, 0x01, 0x00,

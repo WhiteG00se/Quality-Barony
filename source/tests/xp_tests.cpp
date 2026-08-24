@@ -11,6 +11,7 @@
 #include "../quality/minimap_reveal.hpp"
 #include "../quality/minimap_chests.hpp"
 #include "../quality/friendly_fire.hpp"
+#include "../quality/xp_participation.hpp"
 
 namespace
 {
@@ -524,6 +525,75 @@ namespace
 		static_assert(hostilityDecision(false, independent,
 			ActorKind::Other, false) == Decision::Preserve);
 	}
+
+	void testDamageParticipationPolicy()
+	{
+		using quality::friendly_fire::ActorKind;
+		using quality::xp::participation::State;
+		using quality::xp::participation::actualHpLoss;
+		using quality::xp::participation::qualifyingAttacker;
+		using quality::xp::participation::qualifyingVictim;
+
+		static_assert(actualHpLoss(10, 9));
+		static_assert(!actualHpLoss(10, 10));
+		static_assert(!actualHpLoss(10, 11));
+		static_assert(qualifyingAttacker(ActorKind::Player, false));
+		static_assert(qualifyingAttacker(ActorKind::PlayerAlly, false));
+		static_assert(!qualifyingAttacker(ActorKind::IndependentMonster, false));
+		static_assert(qualifyingAttacker(ActorKind::IndependentMonster, true));
+		static_assert(qualifyingAttacker(ActorKind::Other, true));
+		static_assert(qualifyingVictim(ActorKind::IndependentMonster, true));
+		static_assert(!qualifyingVictim(ActorKind::Player, true));
+		static_assert(!qualifyingVictim(ActorKind::PlayerAlly, true));
+		static_assert(!qualifyingVictim(ActorKind::IndependentMonster, false));
+
+		State playerDamage;
+		playerDamage.markDamageParticipation(ActorKind::Player, false,
+			ActorKind::IndependentMonster, true);
+		assert(playerDamage.qualified());
+		assert(playerDamage.claimPartyXp(true,
+			ActorKind::IndependentMonster, true));
+		assert(!playerDamage.claimPartyXp(true,
+			ActorKind::IndependentMonster, true));
+
+		State ordinaryMonster;
+		ordinaryMonster.markDamageParticipation(ActorKind::IndependentMonster,
+			false, ActorKind::IndependentMonster, true);
+		assert(!ordinaryMonster.qualified());
+		ordinaryMonster.markDamageParticipation(ActorKind::IndependentMonster,
+			true, ActorKind::IndependentMonster, true);
+		assert(ordinaryMonster.qualified());
+		assert(ordinaryMonster.claimPartyXp(true,
+			ActorKind::IndependentMonster, true));
+
+		State healedAfterDamage;
+		healedAfterDamage.markDamageParticipation(ActorKind::PlayerAlly, false,
+			ActorKind::IndependentMonster, true);
+		assert(!actualHpLoss(5, 20));
+		assert(healedAfterDamage.qualified());
+		assert(healedAfterDamage.claimPartyXp(true,
+			ActorKind::IndependentMonster, true));
+
+		State normalPartyKill;
+		normalPartyKill.markDamageParticipation(ActorKind::Player, false,
+			ActorKind::IndependentMonster, true);
+		normalPartyKill.notePartyAward();
+		assert(normalPartyKill.partyAwarded());
+		assert(!normalPartyKill.claimPartyXp(true,
+			ActorKind::IndependentMonster, true));
+
+		State clientState;
+		clientState.markDamageParticipation(ActorKind::Other, true,
+			ActorKind::IndependentMonster, true);
+		assert(!clientState.claimPartyXp(false,
+			ActorKind::IndependentMonster, true));
+
+		State excludedVictim;
+		excludedVictim.markDamageParticipation(ActorKind::Player, false,
+			ActorKind::PlayerAlly, true);
+		assert(!excludedVictim.qualified());
+		assert(!excludedVictim.claimPartyXp(true, ActorKind::PlayerAlly, true));
+	}
 }
 
 int main()
@@ -594,6 +664,7 @@ int main()
 	testChestClosedChangesAndRemoteState();
 	testPartyItemEligibilityAndAuthority();
 	testFriendlyFirePolicy();
+	testDamageParticipationPolicy();
 	std::cout << "Quality runtime unit tests passed\n";
 	return 0;
 }

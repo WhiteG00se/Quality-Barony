@@ -67,6 +67,13 @@ if ($LASTEXITCODE -ne 0) {
     throw 'The runtime accepted an unsupported friendly-fire signature.'
 }
 
+Write-Host 'Checking unsupported in-memory EXP-credit signature rejection...'
+& $Launcher '--game-dir' $GameDir '--runtime-dll' $Runtime `
+    '--test-exp-credit-signature-rejection'
+if ($LASTEXITCODE -ne 0) {
+    throw 'The runtime accepted an unsupported EXP-credit signature.'
+}
+
 Write-Host 'Checking unsupported in-memory minimap signature rejection...'
 & $Launcher '--game-dir' $GameDir '--runtime-dll' $Runtime `
     '--test-minimap-signature-rejection'

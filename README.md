@@ -35,6 +35,8 @@
 | Player (any follower last hits) | Global | 100% | 90% | 80% | 70% |
 | Player (other player last hits) | Global | — | 90% | 80% | 70% |
 
+Whenever an EXP-granting non-player unit other than a follower or summon dies after taking at least 1 damage from a player, player-owned follower or summon, or an attacker that was Confused or Drunk at the time, all players and eligible followers receive normal party-kill EXP. The qualifying unit does not need to land the final blow.
+
 Player shares have a 3-EXP minimum. Follower gains use integer rounding without a minimum.
 
 </details>

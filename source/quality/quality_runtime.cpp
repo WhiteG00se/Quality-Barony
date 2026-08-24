@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -14,6 +15,7 @@
 #include "friendly_fire.hpp"
 #include "minimap_runtime.hpp"
 #include "xp.hpp"
+#include "xp_participation.hpp"
 
 namespace
 {
@@ -52,6 +54,10 @@ namespace
 	using Patch = quality::runtime::Patch;
 
 	using AwardXpFn = void (*)(std::uint8_t*, std::uint8_t*, bool, bool);
+	using SetHpFn = void (*)(std::uint8_t*, int);
+	using EntityPairVoidBoolMethodFn = void (*)(std::uint8_t*, std::uint8_t*, bool);
+	using UpdateEnemyBarFn = void (*)(std::uint8_t*, std::uint8_t*, const char*,
+		int, int, bool, int);
 	using EntityMethodFn = void* (*)(std::uint8_t*);
 	using EntityBoolMethodFn = bool (*)(std::uint8_t*);
 	using EntityPairBoolMethodFn = bool (*)(std::uint8_t*, std::uint8_t*);
@@ -64,6 +70,10 @@ namespace
 
 	std::uint8_t* base = nullptr;
 	AwardXpFn originalAwardXp = nullptr;
+	SetHpFn originalSetHp = nullptr;
+	EntityPairVoidBoolMethodFn originalKilledByMonsterObituary = nullptr;
+	EntityPairVoidBoolMethodFn originalUpdateEntityOnHit = nullptr;
+	UpdateEnemyBarFn originalUpdateEnemyBar = nullptr;
 	EntityMethodFn getStats = nullptr;
 	EntityBoolMethodFn monsterIsTinkeringCreation = nullptr;
 	EntityMethodFn monsterAllyGetPlayerLeader = nullptr;
@@ -79,13 +89,34 @@ namespace
 	void* relayPage = nullptr;
 	void* xpTrampoline = nullptr;
 	void* friendlyFireTrampolines = nullptr;
+	void* participationTrampolines = nullptr;
 
 	bool xpContextActive = false;
 	std::uint8_t* rootFollowerEntity = nullptr;
 	int partySize = 1;
 	std::array<quality::xp::OwnerBase, 4> ownerBases {};
 	std::vector<FollowerSnapshot> followers;
+
+	struct ParticipationRecord
+	{
+		std::uint8_t* entity = nullptr;
+		std::uint8_t* stats = nullptr;
+		std::uint32_t uid = 0;
+		std::uint32_t pendingTick = 0;
+		bool pendingDamage = false;
+		quality::xp::participation::State state;
+	};
+
+	std::unordered_map<std::uint32_t, ParticipationRecord> participation;
+	std::uint32_t lastParticipationSweep = 0;
+	bool syntheticPartyAward = false;
 	LONG initializationState = 0;
+
+	bool serverAuthoritative();
+	bool vanillaXpVictimEligible(std::uint8_t*, std::uint8_t*);
+	ParticipationRecord* findParticipation(std::uint8_t*);
+	void correlateDamage(std::uint8_t*, std::uint8_t*);
+	void grantParticipationXp(std::uint8_t*);
 
 	void debug(const char* message)
 	{
@@ -412,9 +443,77 @@ namespace
 		}
 	}
 
+	void grantParticipationXp(std::uint8_t* victim)
+	{
+		auto* record = findParticipation(victim);
+		if ( !record )
+		{
+			return;
+		}
+		const auto uid = record->uid;
+		const bool shouldGrant = record->state.claimPartyXp(
+			serverAuthoritative(), actorKind(victim),
+			vanillaXpVictimEligible(victim, record->stats));
+		if ( !shouldGrant )
+		{
+			participation.erase(uid);
+			return;
+		}
+
+		std::uint8_t* recipient = nullptr;
+		const auto* disconnected = base + layout::clientDisconnectedRva;
+		for ( int player = 0; player < 4; ++player )
+		{
+			if ( !disconnected[player] )
+			{
+				auto* candidate = playerEntity(player);
+				if ( candidate && getStats(candidate) )
+				{
+					recipient = candidate;
+					break;
+				}
+			}
+		}
+		if ( !recipient )
+		{
+			participation.erase(uid);
+			return;
+		}
+
+		record->state.notePartyAward();
+		syntheticPartyAward = true;
+		xpContextActive = true;
+		snapshotFollowers(recipient);
+		originalAwardXp(recipient, victim, true, false);
+		applyFollowerXp();
+		followers.clear();
+		rootFollowerEntity = nullptr;
+		ownerBases = {};
+		xpContextActive = false;
+		syntheticPartyAward = false;
+		participation.erase(uid);
+	}
+
 	void awardXpHook(std::uint8_t* recipient, std::uint8_t* source,
 		const bool share, const bool root)
 	{
+		if ( !syntheticPartyAward )
+		{
+			correlateDamage(source, recipient);
+			if ( root )
+			{
+				if ( auto* record = findParticipation(source) )
+				{
+					const auto recipientKind = actorKind(recipient);
+					if ( recipientKind == quality::friendly_fire::ActorKind::Player
+						|| recipientKind
+							== quality::friendly_fire::ActorKind::PlayerAlly )
+					{
+						record->state.notePartyAward();
+					}
+				}
+			}
+		}
 		const bool outerRoot = root && !xpContextActive;
 		if ( outerRoot )
 		{
@@ -431,6 +530,7 @@ namespace
 			rootFollowerEntity = nullptr;
 			ownerBases = {};
 			xpContextActive = false;
+			grantParticipationXp(source);
 		}
 	}
 
@@ -441,6 +541,184 @@ namespace
 		const auto* raw = reinterpret_cast<const std::uint8_t*>(&address);
 		bytes.insert(bytes.end(), raw, raw + sizeof(address));
 		return bytes;
+	}
+
+	bool serverAuthoritative()
+	{
+		return field<std::int32_t>(base, layout::multiplayerRva)
+			!= layout::multiplayerClient;
+	}
+
+	std::uint32_t entityUid(const std::uint8_t* entity)
+	{
+		return entity ? field<std::uint32_t>(entity, layout::entityUid) : 0;
+	}
+
+	bool validIdentity(const ParticipationRecord& record)
+	{
+		return record.uid != 0 && record.entity && record.stats
+			&& uidToEntity(record.uid) == record.entity
+			&& getStats(record.entity) == record.stats;
+	}
+
+	void sweepParticipation(const std::uint32_t tick)
+	{
+		if ( tick - lastParticipationSweep < 64 )
+		{
+			return;
+		}
+		lastParticipationSweep = tick;
+		for ( auto current = participation.begin(); current != participation.end(); )
+		{
+			if ( !validIdentity(current->second) )
+			{
+				current = participation.erase(current);
+			}
+			else
+			{
+				++current;
+			}
+		}
+	}
+
+	bool vanillaXpVictimEligible(std::uint8_t* entity, std::uint8_t* stats)
+	{
+		if ( !entity || !stats
+			|| behavior(entity) != reinterpret_cast<std::uintptr_t>(
+				base + layout::actMonsterRva)
+			|| skill(entity, layout::skillMonsterAllySummonRank) != 0
+			|| monsterIsTinkeringCreation(entity) )
+		{
+			return false;
+		}
+
+		const int type = field<std::int32_t>(stats, layout::statType);
+		switch ( type )
+		{
+			case layout::revenantSkull:
+			case layout::adorcisedWeapon:
+			case layout::flameElemental:
+			case layout::hologram:
+			case layout::duckSmall:
+				return false;
+			case layout::skeleton:
+				return !attributeNotEmpty(stats, "revenant_skeleton");
+			case layout::mothSmall:
+				return !attributeNotEmpty(stats, "fire_sprite");
+			case layout::earthElemental:
+				return !monsterAllyGetPlayerLeader(entity);
+			default:
+				break;
+		}
+
+		constexpr int incubus = 24;
+		return type != incubus || std::strncmp(reinterpret_cast<const char*>(
+			stats + layout::statName), "inner demon", 11) != 0;
+	}
+
+	ParticipationRecord* findParticipation(std::uint8_t* entity)
+	{
+		const auto uid = entityUid(entity);
+		const auto found = participation.find(uid);
+		if ( uid == 0 || found == participation.end() )
+		{
+			return nullptr;
+		}
+		if ( !validIdentity(found->second) )
+		{
+			participation.erase(found);
+			return nullptr;
+		}
+		return &found->second;
+	}
+
+	void observeHpLoss(std::uint8_t* victim, std::uint8_t* stats,
+		const int previousHp, const int currentHp)
+	{
+		if ( !serverAuthoritative() || !victim || !stats )
+		{
+			return;
+		}
+		const auto uid = entityUid(victim);
+		if ( uid == 0 || uidToEntity(uid) != victim )
+		{
+			return;
+		}
+		const auto tick = field<std::uint32_t>(base, layout::ticksRva);
+		sweepParticipation(tick);
+		auto& record = participation[uid];
+		if ( record.entity != victim || record.stats != stats )
+		{
+			record = {};
+			record.entity = victim;
+			record.stats = stats;
+			record.uid = uid;
+		}
+		record.pendingDamage = quality::xp::participation::actualHpLoss(
+			previousHp, currentHp);
+		record.pendingTick = tick;
+	}
+
+	void correlateDamage(std::uint8_t* victim, std::uint8_t* attacker)
+	{
+		if ( !serverAuthoritative() || !victim || !attacker )
+		{
+			return;
+		}
+		auto* record = findParticipation(victim);
+		if ( !record || !record->pendingDamage
+			|| record->pendingTick != field<std::uint32_t>(base, layout::ticksRva) )
+		{
+			return;
+		}
+		record->pendingDamage = false;
+		record->state.markDamageParticipation(actorKind(attacker),
+			entityImpaired(attacker), actorKind(victim),
+			vanillaXpVictimEligible(victim, record->stats));
+	}
+
+	void setHpHook(std::uint8_t* entity, const int amount)
+	{
+		auto* previousStats = entity
+			? static_cast<std::uint8_t*>(getStats(entity)) : nullptr;
+		const int previousHp = previousStats
+			? field<std::int32_t>(previousStats, layout::statHp) : 0;
+		originalSetHp(entity, amount);
+		auto* currentStats = entity
+			? static_cast<std::uint8_t*>(getStats(entity)) : nullptr;
+		if ( previousStats && currentStats == previousStats )
+		{
+			observeHpLoss(entity, currentStats, previousHp,
+				field<std::int32_t>(currentStats, layout::statHp));
+		}
+	}
+
+	void killedByMonsterObituaryHook(std::uint8_t* attacker,
+		std::uint8_t* victim, const bool fromSpell)
+	{
+		correlateDamage(victim, attacker);
+		originalKilledByMonsterObituary(attacker, victim, fromSpell);
+	}
+
+	void updateEntityOnHitHook(std::uint8_t* victim,
+		std::uint8_t* attacker, const bool alertTarget)
+	{
+		correlateDamage(victim, attacker);
+		originalUpdateEntityOnHit(victim, attacker, alertTarget);
+	}
+
+	void updateEnemyBarHook(std::uint8_t* attacker, std::uint8_t* victim,
+		const char* name, const int hp, const int maxHp,
+		const bool lowPriority, const int gibType)
+	{
+		correlateDamage(victim, attacker);
+		originalUpdateEnemyBar(attacker, victim, name, hp, maxHp,
+			lowPriority, gibType);
+	}
+
+	void monsterCommittedDeathHook(std::uint8_t* victim)
+	{
+		grantParticipationXp(victim);
 	}
 
 	void prepareOrdinaryTrampoline(std::uint8_t* trampoline,
@@ -606,6 +884,48 @@ namespace
 		return code;
 	}
 
+	std::vector<std::uint8_t> makeCommittedDeathStub()
+	{
+		std::vector<std::uint8_t> code = {
+			0x9C,
+			0x50, 0x51, 0x52,
+			0x41, 0x50, 0x41, 0x51,
+			0x41, 0x52, 0x41, 0x53,
+			0x48, 0x81, 0xEC, 0x80, 0x00, 0x00, 0x00,
+			0xF3, 0x0F, 0x7F, 0x44, 0x24, 0x20,
+			0xF3, 0x0F, 0x7F, 0x4C, 0x24, 0x30,
+			0xF3, 0x0F, 0x7F, 0x54, 0x24, 0x40,
+			0xF3, 0x0F, 0x7F, 0x5C, 0x24, 0x50,
+			0xF3, 0x0F, 0x7F, 0x64, 0x24, 0x60,
+			0xF3, 0x0F, 0x7F, 0x6C, 0x24, 0x70,
+			0x49, 0x8B, 0xCF,
+			0x48, 0xB8,
+		};
+		appendImmediate(code,
+			reinterpret_cast<const void*>(&monsterCommittedDeathHook));
+		const std::initializer_list<std::uint8_t> restore = {
+			0xFF, 0xD0,
+			0xF3, 0x0F, 0x6F, 0x44, 0x24, 0x20,
+			0xF3, 0x0F, 0x6F, 0x4C, 0x24, 0x30,
+			0xF3, 0x0F, 0x6F, 0x54, 0x24, 0x40,
+			0xF3, 0x0F, 0x6F, 0x5C, 0x24, 0x50,
+			0xF3, 0x0F, 0x6F, 0x64, 0x24, 0x60,
+			0xF3, 0x0F, 0x6F, 0x6C, 0x24, 0x70,
+			0x48, 0x81, 0xC4, 0x80, 0x00, 0x00, 0x00,
+			0x41, 0x5B, 0x41, 0x5A,
+			0x41, 0x59, 0x41, 0x58,
+			0x5A, 0x59, 0x58, 0x9D,
+		};
+		code.insert(code.end(), restore.begin(), restore.end());
+		code.insert(code.end(), layout::monsterCommittedDeathSignature.begin(),
+			layout::monsterCommittedDeathSignature.end());
+		const auto continuation = absoluteJump(base
+			+ layout::monsterCommittedDeathRva
+			+ layout::monsterCommittedDeathSignature.size());
+		code.insert(code.end(), continuation.begin(), continuation.end());
+		return code;
+	}
+
 	void* allocateNearModule(const std::size_t bytes)
 	{
 		SYSTEM_INFO info {};
@@ -628,6 +948,16 @@ namespace
 
 	void releaseAllocations()
 	{
+		participation.clear();
+		if ( participationTrampolines )
+		{
+			VirtualFree(participationTrampolines, 0, MEM_RELEASE);
+			participationTrampolines = nullptr;
+			originalSetHp = nullptr;
+			originalKilledByMonsterObituary = nullptr;
+			originalUpdateEntityOnHit = nullptr;
+			originalUpdateEnemyBar = nullptr;
+		}
 		if ( friendlyFireTrampolines )
 		{
 			VirtualFree(friendlyFireTrampolines, 0, MEM_RELEASE);
@@ -678,6 +1008,15 @@ namespace
 				layout::steamAchievementEntitySignature)
 			&& matches(layout::compendiumEventUpdateRva,
 				layout::compendiumEventUpdateSignature)
+			&& matches(layout::setHpRva, layout::setHpSignature)
+			&& matches(layout::killedByMonsterObituaryHookRva,
+				layout::killedByMonsterObituaryHookSignature)
+			&& matches(layout::updateEntityOnHitHookRva,
+				layout::updateEntityOnHitHookSignature)
+			&& matches(layout::updateEnemyBarRva,
+				layout::updateEnemyBarSignature)
+			&& matches(layout::monsterCommittedDeathRva,
+				layout::monsterCommittedDeathSignature)
 			&& matches(layout::xpCaptureRva, layout::xpCaptureSignature)
 			&& matches(layout::xpFollowerBlockRva, layout::xpFollowerBlockSignature)
 			&& matches(layout::xpMainBlockRva, layout::xpMainBlockSignature);
@@ -748,12 +1087,15 @@ namespace
 		compendiumEventUpdate = reinterpret_cast<CompendiumEventUpdateFn>(
 			base + layout::compendiumEventUpdateRva);
 
-		relayPage = allocateNearModule(3 * relayStride);
+		relayPage = allocateNearModule(4 * relayStride);
 		xpTrampoline = VirtualAlloc(nullptr, 64, MEM_COMMIT | MEM_RESERVE,
 			PAGE_EXECUTE_READWRITE);
 		friendlyFireTrampolines = VirtualAlloc(nullptr, 3 * trampolineStride,
 			MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
-		if ( !relayPage || !xpTrampoline || !friendlyFireTrampolines )
+		participationTrampolines = VirtualAlloc(nullptr, 4 * trampolineStride,
+			MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+		if ( !relayPage || !xpTrampoline || !friendlyFireTrampolines
+			|| !participationTrampolines )
 		{
 			debug("Runtime hook allocation failed");
 			releaseAllocations();
@@ -764,13 +1106,17 @@ namespace
 		auto* captureRelay = relay;
 		auto* followerRelay = relay + relayStride;
 		auto* mainRelay = relay + 2 * relayStride;
+		auto* committedDeathRelay = relay + 3 * relayStride;
 		const auto captureStub = makeCaptureStub();
 		const auto followerStub = makeFollowerBlockStub(followerRelay);
 		const auto mainStub = makeMainBlockStub(mainRelay);
+		const auto committedDeathStub = makeCommittedDeathStub();
 		if ( captureStub.empty() || followerStub.empty() || mainStub.empty()
+			|| committedDeathStub.empty()
 			|| captureStub.size() > relayStride
 			|| followerStub.size() > relayStride
-			|| mainStub.size() > relayStride )
+			|| mainStub.size() > relayStride
+			|| committedDeathStub.size() > relayStride )
 		{
 			debug("EXP relay construction failed");
 			releaseAllocations();
@@ -779,6 +1125,8 @@ namespace
 		std::memcpy(captureRelay, captureStub.data(), captureStub.size());
 		std::memcpy(followerRelay, followerStub.data(), followerStub.size());
 		std::memcpy(mainRelay, mainStub.data(), mainStub.size());
+		std::memcpy(committedDeathRelay, committedDeathStub.data(),
+			committedDeathStub.size());
 
 		auto* trampoline = static_cast<std::uint8_t*>(xpTrampoline);
 		std::memcpy(trampoline, base + layout::awardXpHookRva,
@@ -806,6 +1154,30 @@ namespace
 		originalFriendlyFireProtection = reinterpret_cast<EntityPairBoolMethodFn>(
 			protectionTrampoline);
 
+		auto* participationHooks = static_cast<std::uint8_t*>(
+			participationTrampolines);
+		auto* setHpTrampoline = participationHooks;
+		auto* obituaryTrampoline = participationHooks + trampolineStride;
+		auto* entityHitTrampoline = participationHooks + 2 * trampolineStride;
+		auto* enemyBarTrampoline = participationHooks + 3 * trampolineStride;
+		prepareOrdinaryTrampoline(setHpTrampoline, layout::setHpRva,
+			layout::setHpSignature.size());
+		prepareOrdinaryTrampoline(obituaryTrampoline,
+			layout::killedByMonsterObituaryHookRva,
+			layout::killedByMonsterObituaryHookSignature.size());
+		prepareOrdinaryTrampoline(entityHitTrampoline,
+			layout::updateEntityOnHitHookRva,
+			layout::updateEntityOnHitHookSignature.size());
+		prepareOrdinaryTrampoline(enemyBarTrampoline,
+			layout::updateEnemyBarRva, layout::updateEnemyBarSignature.size());
+		originalSetHp = reinterpret_cast<SetHpFn>(setHpTrampoline);
+		originalKilledByMonsterObituary =
+			reinterpret_cast<EntityPairVoidBoolMethodFn>(obituaryTrampoline);
+		originalUpdateEntityOnHit =
+			reinterpret_cast<EntityPairVoidBoolMethodFn>(entityHitTrampoline);
+		originalUpdateEnemyBar = reinterpret_cast<UpdateEnemyBarFn>(
+			enemyBarTrampoline);
+
 		std::vector<Patch> patches;
 		const auto addPatch = [&](const std::uintptr_t rva, const auto& expected,
 			std::vector<std::uint8_t> replacement) {
@@ -827,6 +1199,29 @@ namespace
 		addPatch(layout::friendlyFireProtectionRva,
 			layout::friendlyFireProtectionSignature,
 			absoluteJump(reinterpret_cast<void*>(&friendlyFireProtectionHook)));
+		addPatch(layout::setHpRva, layout::setHpSignature,
+			absoluteJump(reinterpret_cast<void*>(&setHpHook)));
+		addPatch(layout::killedByMonsterObituaryHookRva,
+			layout::killedByMonsterObituaryHookSignature,
+			absoluteJump(reinterpret_cast<void*>(&killedByMonsterObituaryHook)));
+		addPatch(layout::updateEntityOnHitHookRva,
+			layout::updateEntityOnHitHookSignature,
+			absoluteJump(reinterpret_cast<void*>(&updateEntityOnHitHook)));
+		addPatch(layout::updateEnemyBarRva, layout::updateEnemyBarSignature,
+			absoluteJump(reinterpret_cast<void*>(&updateEnemyBarHook)));
+		auto committedDeathJump = relativeBranch(
+			layout::monsterCommittedDeathRva, committedDeathRelay, 0xE9);
+		if ( committedDeathJump.empty() )
+		{
+			debug("Committed-death relay is outside relative-branch range");
+			releaseAllocations();
+			return false;
+		}
+		committedDeathJump.resize(layout::monsterCommittedDeathSignature.size(),
+			0x90);
+		addPatch(layout::monsterCommittedDeathRva,
+			layout::monsterCommittedDeathSignature,
+			std::move(committedDeathJump));
 		addPatch(layout::xpCaptureRva, layout::xpCaptureSignature,
 			relativeBranch(layout::xpCaptureRva, captureRelay, 0xE8));
 		auto followerJump = relativeBranch(layout::xpFollowerBlockRva,

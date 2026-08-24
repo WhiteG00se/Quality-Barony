@@ -18,12 +18,12 @@
 
 | EXP Receiver | Range | Solo | 2 players | 3 players | 4 players |
 |---|---:|---:|---:|---:|---:|
-| Ordinary follower<br>(other player last hits) | ~~\~6,250 tiles~~<br>`Global` | — | ~~0%~~<br>`108%` | ~~0%~~<br>`96%` | ~~0%~~<br>`84%` |
-| Ordinary follower<br>(its player last hits) | ~~\~6,250 tiles~~<br>`Global` | ~~100%~~<br>`120%` | ~~90%~~<br>`108%` | ~~80%~~<br>`96%` | ~~70%~~<br>`84%` |
-| Ordinary follower<br>(it last hits) | ~~\~6,250 tiles~~<br>`Global` | ~~200%~~<br>`120%` | ~~190%~~<br>`108%` | ~~180%~~<br>`96%` | ~~170%~~<br>`84%` |
-| Conjurer summon<br>(other player last hits) | ~~\~6,250 tiles~~<br>`Global` | — | ~~0%~~<br>`108%` | ~~0%~~<br>`96%` | ~~0%~~<br>`84%` |
-| Conjurer summon<br>(its player last hits) | ~~\~6,250 tiles~~<br>`Global` | ~~100%~~<br>`120%` | ~~100%~~<br>`108%` | ~~100%~~<br>`96%` | ~~100%~~<br>`84%` |
-| Conjurer summon<br>(it last hits) | ~~\~6,250 tiles~~<br>`Global` | ~~200%~~<br>`120%` | ~~200%~~<br>`108%` | ~~200%~~<br>`96%` | ~~200%~~<br>`84%` |
+| Ordinary follower<br>(other player last hits) | ~~\~6,250 tiles~~<br>`Global` | — | ~~0%~~<br>`117%` | ~~0%~~<br>`104%` | ~~0%~~<br>`91%` |
+| Ordinary follower<br>(its player last hits) | ~~\~6,250 tiles~~<br>`Global` | ~~100%~~<br>`130%` | ~~90%~~<br>`117%` | ~~80%~~<br>`104%` | ~~70%~~<br>`91%` |
+| Ordinary follower<br>(it last hits) | ~~\~6,250 tiles~~<br>`Global` | ~~200%~~<br>`130%` | ~~190%~~<br>`117%` | ~~180%~~<br>`104%` | ~~170%~~<br>`91%` |
+| Conjurer summon<br>(other player last hits) | ~~\~6,250 tiles~~<br>`Global` | — | ~~0%~~<br>`117%` | ~~0%~~<br>`104%` | ~~0%~~<br>`91%` |
+| Conjurer summon<br>(its player last hits) | ~~\~6,250 tiles~~<br>`Global` | ~~100%~~<br>`130%` | ~~100%~~<br>`117%` | ~~100%~~<br>`104%` | ~~100%~~<br>`91%` |
+| Conjurer summon<br>(it last hits) | ~~\~6,250 tiles~~<br>`Global` | ~~200%~~<br>`130%` | ~~200%~~<br>`117%` | ~~200%~~<br>`104%` | ~~200%~~<br>`91%` |
 | Player (last hits) | Global | 100% | 90% | 80% | 70% |
 | Player (any follower last hits) | Global | 100% | 90% | 80% | 70% |
 | Player (other player last hits) | Global | — | 90% | 80% | 70% |

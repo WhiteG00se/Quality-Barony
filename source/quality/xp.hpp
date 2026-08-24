@@ -25,7 +25,7 @@ namespace quality::xp
 	constexpr int followerPercent(const int partySize)
 	{
 		constexpr std::array<int, maximumPartySize> percentages = {
-			120, 108, 96, 84
+			130, 117, 104, 91
 		};
 		return percentages[static_cast<std::size_t>(
 			clampPartySize(partySize) - minimumPartySize)];

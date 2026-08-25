@@ -8,6 +8,7 @@
 #include "../quality/xp.hpp"
 #include "../quality/minimap.hpp"
 #include "../quality/minimap_items.hpp"
+#include "../quality/minimap_network.hpp"
 #include "../quality/minimap_reveal.hpp"
 #include "../quality/minimap_chests.hpp"
 #include "../quality/minimap_creatures.hpp"
@@ -101,11 +102,10 @@ namespace
 	void testRevealEligibility()
 	{
 		using namespace quality::minimap::reveal;
-		Candidate candidate { 1, 2, 3, CandidateKind::Chest };
+		Candidate candidate {1, 2, 3, CandidateKind::Grave};
 		assert(eligible(candidate, false));
 		assert(!eligible(candidate, true));
-		candidate.kind = CandidateKind::Grave;
-		assert(eligible(candidate, false));
+		assert(markerKind(candidate) == Kind::ShinyYellow);
 		candidate.kind = CandidateKind::Fountain;
 		candidate.available = false;
 		assert(!eligible(candidate, false));
@@ -116,24 +116,22 @@ namespace
 		assert(eligible(candidate, false));
 		candidate.kind = CandidateKind::Item;
 		candidate.hasLoot = false;
-		assert(eligible(candidate, false));
-		candidate.playerOwned = true;
-		assert(!eligible(candidate, false));
+		candidate.itemType = 126;
 		candidate.identified = false;
 		assert(eligible(candidate, false));
 		candidate.identified = true;
-		candidate.playerOwned = false;
+		assert(!eligible(candidate, false));
+		assert(immediateBlue(candidate));
 		candidate.lootBag = true;
 		assert(!eligible(candidate, false));
+		assert(!immediateBlue(candidate));
 		candidate.kind = CandidateKind::Gold;
 		candidate.lootBag = false;
-		candidate.playerOwned = true;
 		assert(eligible(candidate, false));
 		candidate.available = false;
 		assert(!eligible(candidate, false));
 		candidate.kind = CandidateKind::None;
 		candidate.available = true;
-		candidate.playerOwned = false;
 		candidate.lootBag = false;
 		assert(!eligible(candidate, false));
 	}
@@ -150,13 +148,24 @@ namespace
 		static_assert(!eligibleGroundGold(1, 42));
 	}
 
-	void testRevealedGroundItemEligibility()
+	void testGroundItemClassification()
 	{
-		using namespace quality::minimap::reveal;
-		static_assert(roughRockItemType == 125);
-		static_assert(!eligibleRevealedGroundItem(roughRockItemType, true));
-		static_assert(eligibleRevealedGroundItem(roughRockItemType, false));
-		static_assert(eligibleRevealedGroundItem(roughRockItemType + 1, true));
+		using namespace quality::minimap::items;
+		static_assert(appearance(126, false, false) == Appearance::Green);
+		static_assert(appearance(126, true, false) == Appearance::Blue);
+		static_assert(appearance(artifactOrbBlue, false, false)
+			== Appearance::ShinyYellow);
+		static_assert(appearance(artifactOrbGreen, true, false)
+			== Appearance::ShinyYellow);
+		static_assert(appearance(roughRockItemType, false, false)
+			== Appearance::Hidden);
+		static_assert(appearance(roughRockItemType, true, false)
+			== Appearance::Hidden);
+		static_assert(appearance(126, false, true) == Appearance::Hidden);
+		static_assert(eligibleGroundItem(true, false, false));
+		static_assert(!eligibleGroundItem(false, false, false));
+		static_assert(!eligibleGroundItem(true, true, false));
+		static_assert(!eligibleGroundItem(true, false, true));
 	}
 
 	void testExitCreatureCountsAndText()
@@ -198,14 +207,22 @@ namespace
 	void testPersistentRevealLifecycle()
 	{
 		using namespace quality::minimap::reveal;
+		auto unidentifiedItem = [](const std::uint32_t uid, const int x,
+			const int y)
+		{
+			Candidate candidate {uid, x, y, CandidateKind::Item};
+			candidate.itemType = 126;
+			candidate.identified = false;
+			return candidate;
+		};
 		State state;
 		state.reset();
-		state.observeLive({{5, 1, 1, CandidateKind::Item}});
+		state.observeLive({unidentifiedItem(5, 1, 1)});
 		assert(!state.contains(5));
 		state.rememberInitialUses(10, 2);
 		state.refresh({
 			{10, 1, 1, CandidateKind::Fountain},
-			{20, 2, 2, CandidateKind::Item},
+			unidentifiedItem(20, 2, 2),
 			{30, 3, 3, CandidateKind::Exit},
 		});
 		assert(state.active());
@@ -216,7 +233,7 @@ namespace
 		state.observeLive({
 			{10, 4, 5, CandidateKind::Fountain},
 			{30, 3, 3, CandidateKind::Exit},
-			{40, 4, 4, CandidateKind::Item},
+			unidentifiedItem(40, 4, 4),
 		});
 		assert(state.contains(10));
 		assert(!state.contains(20));
@@ -225,26 +242,28 @@ namespace
 		assert(markers.size() == 3);
 		assert(markers[0].uid == 10 && markers[0].x == 4 && markers[0].y == 5);
 		assert(markers[2].uid == 40
-			&& markers[2].kind == Kind::Unused);
+			&& markers[2].kind == Kind::Green);
 
-		Candidate ineligible {50, 5, 5, CandidateKind::Item};
-		ineligible.playerOwned = true;
+		Candidate ineligible = unidentifiedItem(50, 5, 5);
+		ineligible.itemType = quality::minimap::items::roughRockItemType;
 		Candidate lootBag {51, 5, 6, CandidateKind::Item};
+		lootBag.itemType = 126;
+		lootBag.identified = false;
 		lootBag.lootBag = true;
 		state.observeLive({
 			{10, 4, 5, CandidateKind::Fountain},
 			{30, 3, 3, CandidateKind::Exit},
-			{40, 4, 4, CandidateKind::Item},
+			unidentifiedItem(40, 4, 4),
 			ineligible,
 			lootBag,
 		});
 		assert(!state.contains(50));
 		assert(!state.contains(51));
-		ineligible.playerOwned = false;
+		ineligible.itemType = 126;
 		state.observeLive({
 			{10, 4, 5, CandidateKind::Fountain},
 			{30, 3, 3, CandidateKind::Exit},
-			{40, 4, 4, CandidateKind::Item},
+			unidentifiedItem(40, 4, 4),
 			ineligible,
 		});
 		assert(state.contains(50));
@@ -253,14 +272,14 @@ namespace
 		assert(!state.contains(10));
 		state.observeLive({
 			{10, 1, 1, CandidateKind::Fountain},
-			{40, 4, 4, CandidateKind::Item},
+			unidentifiedItem(40, 4, 4),
 		});
 		assert(!state.contains(10));
 		assert(state.contains(40));
 		state.reset();
 		assert(!state.active());
 		assert(state.markers().empty());
-		state.observeLive({{60, 6, 6, CandidateKind::Item}});
+		state.observeLive({unidentifiedItem(60, 6, 6)});
 		assert(!state.contains(60));
 	}
 
@@ -310,148 +329,90 @@ namespace
 		assert(!acceptClientRefresh(true, true, 7, 8));
 	}
 
-	void testPartyItemPickupDropIdentity()
+	void testRevealGatingIsPerPlayer()
 	{
-		using quality::minimap::items::State;
-		State state;
-		state.reset();
-		constexpr std::uint32_t key = 0x12345678U;
-		assert(state.observe(200, key, 8, 9, false) == 200);
-		assert(state.markers().empty());
-		assert(state.pickUp(200, key) == 200);
-		assert(state.observe(201, key, 12, 13, true) == 200);
-		auto markers = state.markers();
-		assert(markers.size() == 1);
-		assert(markers[0].markerId == 200 && markers[0].entityUid == 201);
-		assert(markers[0].x == 12 && markers[0].y == 13);
-		state.observe(201, key, 14, 15, false);
-		markers = state.markers();
-		assert(markers[0].x == 14 && markers[0].y == 15);
-		state.remove(201);
-		assert(state.markers().empty());
+		using namespace quality::minimap::reveal;
+		Candidate green {10, 2, 3, CandidateKind::Item};
+		green.itemType = 126;
+		green.identified = false;
+		Candidate yellow {11, 4, 5, CandidateKind::Item};
+		yellow.itemType = quality::minimap::items::artifactOrbBlue;
+		State first;
+		State second;
+		first.refresh({green, yellow});
+		second.observeLive({green, yellow});
+		assert(first.contains(10) && first.contains(11));
+		assert(!second.contains(10) && !second.contains(11));
+		assert(!immediateBlue(green) && !immediateBlue(yellow));
+		green.identified = true;
+		assert(immediateBlue(green));
 	}
 
-	void testPartyItemStartingDropQueuesAndReset()
-	{
-		using quality::minimap::items::State;
-		State state;
-		constexpr std::uint32_t key = 99;
-		assert(state.observe(500, key, 1, 1, true) == 500);
-		assert(state.isPartyDropped(500));
-		state.reset();
-		assert(state.markers().empty());
-
-		state.observe(10, key, 1, 1, false);
-		state.observe(11, key, 2, 2, false);
-		assert(state.pickUp(10, key) == 10);
-		assert(state.pickUp(11, key) == 11);
-		assert(state.observe(20, key, 3, 3, true) == 10);
-		assert(state.observe(21, key, 4, 4, true) == 11);
-	}
-
-	void testPartyItemFingerprintAndRemoteDrop()
-	{
-		using quality::minimap::items::stackFingerprint;
-		constexpr std::array<std::uint32_t, 5> fields = {1, 2, 3, 4, 5};
-		static_assert(stackFingerprint(fields) != 0);
-		static_assert(stackFingerprint(fields)
-			== stackFingerprint({1, 2, 3, 4, 5}));
-		quality::minimap::items::State state;
-		state.applyDrop(0x80000001U, 700, 77, 20, 21);
-		const auto markers = state.markers();
-		assert(markers.size() == 1 && markers[0].markerId == 0x80000001U);
-		assert(state.pickUp(700, 77) == 0x80000001U);
-		assert(state.markers().empty());
-	}
-
-	void testFailedPickupKeepsGreenIdentity()
-	{
-		quality::minimap::items::State items;
-		quality::minimap::reveal::State reveal;
-		constexpr std::uint32_t key = 77;
-		items.observe(100, key, 4, 5, false);
-		reveal.refresh({{100, 4, 5,
-			quality::minimap::reveal::CandidateKind::Item}});
-		assert(items.isTrackedOrdinary(100));
-		assert(items.rebindOrdinary(100, 101, key, 5, 5));
-		assert(reveal.rebind(100, 101, 5, 5));
-		assert(!items.isPartyDropped(101));
-		assert(items.isTrackedOrdinary(101));
-		assert(items.markers().empty());
-		assert(!reveal.contains(100));
-		assert(reveal.contains(101));
-		const auto markers = reveal.markers();
-		assert(markers.size() == 1 && markers[0].uid == 101);
-		assert(markers[0].x == 5 && markers[0].y == 5);
-
-		items.observe(200, key, 1, 1, true);
-		assert(!items.rebindOrdinary(200, 201, key, 1, 1));
-		assert(items.isPartyDropped(200));
-	}
-
-	void testChestInteractionLifecycle()
+	void testChestContentLifecycle()
 	{
 		using namespace quality::minimap::chests;
 		static_assert(eligibleOrdinary(true, 0));
 		static_assert(!eligibleOrdinary(true, 1));
 		static_assert(!eligibleOrdinary(false, 0));
-		State state;
-		assert(state.observeAuthoritative({{10, 2, 3, 4, false}}).empty());
-		assert(state.markers().empty());
-		assert(state.observeAuthoritative({{10, 2, 3, 4, true}}).empty());
-		assert(!state.interacted(10));
-		assert(state.observeAuthoritative({{10, 2, 3, 3, true}}).size() == 1);
-		assert(state.interacted(10));
-		auto markers = state.markers();
-		assert(markers.size() == 1 && markers[0].uid == 10);
+		static_assert(classify(0, 0) == Contents::Empty);
+		static_assert(classify(2, 0) == Contents::HasUnidentified);
+		static_assert(classify(0, 2) == Contents::IdentifiedOnly);
+		static_assert(classify(1, 3) == Contents::HasUnidentified);
+		static_assert(validContentsValue(0));
+		static_assert(validContentsValue(2));
+		static_assert(!validContentsValue(3));
 
-		assert(state.observeAuthoritative({{10, 2, 3, 0, true}}).size() == 1);
-		assert(state.markers().empty());
-		assert(state.interacted(10));
-		assert(state.observeAuthoritative({{10, 2, 3, 2, true}}).size() == 1);
-		assert(state.markers().size() == 1);
-		state.observeAuthoritative({});
-		assert(state.markers().empty());
-		assert(!state.interacted(10));
-	}
-
-	void testChestClosedChangesAndRemoteState()
-	{
-		using namespace quality::minimap::chests;
 		State authoritative;
-		authoritative.observeAuthoritative({{20, 4, 5, 3, false}});
-		assert(authoritative.observeAuthoritative({{20, 4, 5, 2, false}}).empty());
-		assert(!authoritative.interacted(20));
-		authoritative.observeAuthoritative({{20, 4, 5, 2, true}});
-		const auto updates = authoritative.observeAuthoritative({{20, 4, 5, 1, false}});
-		assert(updates.size() == 1 && updates[0].interacted
-			&& updates[0].nonempty);
+		auto updates = authoritative.observeAuthoritative({{20, 4, 5, 0, 0}});
+		assert(updates.size() == 1 && updates[0].contents == Contents::Empty);
+		assert(authoritative.snapshots().empty());
+		updates = authoritative.observeAuthoritative({{20, 4, 5, 2, 0}});
+		assert(updates.size() == 1
+			&& updates[0].contents == Contents::HasUnidentified);
+		assert(authoritative.markers(Contents::HasUnidentified).size() == 1);
+		updates = authoritative.observeAuthoritative({{20, 4, 5, 1, 3}});
+		assert(updates.empty());
+		updates = authoritative.observeAuthoritative({{20, 4, 5, 0, 3}});
+		assert(updates.size() == 1
+			&& updates[0].contents == Contents::IdentifiedOnly);
+		updates = authoritative.observeAuthoritative({{20, 4, 5, 0, 0}});
+		assert(updates.size() == 1 && updates[0].contents == Contents::Empty);
+		updates = authoritative.observeAuthoritative({{20, 4, 5, 4, 0}});
+		assert(updates.size() == 1
+			&& updates[0].contents == Contents::HasUnidentified);
+		updates = authoritative.observeAuthoritative({});
+		assert(updates.size() == 1 && updates[0].contents == Contents::Empty);
 
 		State remote;
-		remote.apply(updates[0]);
-		assert(remote.interacted(20));
-		assert(remote.markers().size() == 1);
-		remote.apply({20, 4, 5, true, false});
-		assert(remote.markers().empty());
-		assert(remote.updates().size() == 1);
-		remote.observeLive({{20, 7, 8, 0, false}});
-		const auto snapshot = remote.updates();
+		remote.apply({20, 4, 5, Contents::IdentifiedOnly});
+		assert(remote.markers(Contents::IdentifiedOnly).size() == 1);
+		remote.observeLive({{20, 7, 8, 0, 0}});
+		const auto snapshot = remote.snapshots();
 		assert(snapshot[0].x == 7 && snapshot[0].y == 8);
+		remote.apply({20, 7, 8, Contents::Empty});
+		assert(remote.snapshots().empty());
 		remote.reset();
-		assert(remote.updates().empty());
+		assert(remote.snapshots().empty());
 	}
 
-	void testPartyItemEligibilityAndAuthority()
+	void testMinimapNetworkProtocolAndRouting()
 	{
-		using quality::minimap::items::eligibleGroundItem;
-		using quality::minimap::items::locallyAuthoritative;
-		static_assert(eligibleGroundItem(true, false, false));
-		static_assert(!eligibleGroundItem(false, false, false));
-		static_assert(!eligibleGroundItem(true, true, false));
-		static_assert(!eligibleGroundItem(true, false, true));
-		static_assert(locallyAuthoritative(0));
-		static_assert(locallyAuthoritative(1));
-		static_assert(!locallyAuthoritative(2));
+		using namespace quality::minimap::network;
+		static_assert(compatible(Stream::State, protocolVersion));
+		static_assert(compatible(Stream::Roster, rosterProtocolVersion));
+		static_assert(compatible(Stream::Sightings, sightingProtocolVersion));
+		static_assert(!compatible(Stream::State, protocolVersion - 1));
+		static_assert(!compatible(Stream::Roster, rosterProtocolVersion - 1));
+		static_assert(validSender(1, 1));
+		static_assert(validSender(1, 3));
+		static_assert(!validSender(1, 0));
+		static_assert(validSender(2, 0));
+		static_assert(!validSender(2, 1));
+		static_assert(hostNumberForTarget(1, 1) == 0);
+		static_assert(hostNumberForTarget(1, 3) == 2);
+		static_assert(hostNumberForTarget(2, 0) == 0);
+		static_assert(hostNumberForTarget(2, 1) == -1);
+		static_assert(deliveryKey(1, 7) != deliveryKey(2, 7));
 	}
 
 	void testFriendlyFirePolicy()
@@ -768,6 +729,8 @@ int main()
 		== quality::minimap::MarkerAppearance::Cauldron);
 	static_assert(quality::minimap::classifyEntity(0, false, 0x06000001U,
 		false, false, false) == quality::minimap::MarkerAppearance::DetectedUnit);
+	static_assert(quality::minimap::shinyYellow
+		== quality::minimap::color(0xFF, 0xD7, 0x00));
 	testReadmePercentages();
 	testRoundingAndMinimum();
 	testInspiration();
@@ -775,19 +738,15 @@ int main()
 	testEligibilityDeduplicationAndLastHit();
 	testRevealEligibility();
 	testGroundGoldEligibility();
-	testRevealedGroundItemEligibility();
+	testGroundItemClassification();
 	testExitCreatureCountsAndText();
 	testPersistentRevealLifecycle();
 	testGroundGoldLiveLifecycle();
 	testTooltipDebounce();
 	testRevealSynchronizationGates();
-	testPartyItemPickupDropIdentity();
-	testPartyItemStartingDropQueuesAndReset();
-	testPartyItemFingerprintAndRemoteDrop();
-	testFailedPickupKeepsGreenIdentity();
-	testChestInteractionLifecycle();
-	testChestClosedChangesAndRemoteState();
-	testPartyItemEligibilityAndAuthority();
+	testRevealGatingIsPerPlayer();
+	testChestContentLifecycle();
+	testMinimapNetworkProtocolAndRouting();
 	testFriendlyFirePolicy();
 	testDamageParticipationPolicy();
 	testCreatureVisionAndFinalReveal();

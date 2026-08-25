@@ -6,6 +6,8 @@
 #include <unordered_set>
 #include <vector>
 
+#include "minimap_items.hpp"
+
 namespace quality::minimap::reveal
 {
 	constexpr bool acceptHostRequest(const bool connectedClient,
@@ -26,7 +28,8 @@ namespace quality::minimap::reveal
 
 	enum class Kind : std::uint8_t
 	{
-		Unused,
+		Green,
+		ShinyYellow,
 		Exit,
 		Workbench,
 		Cauldron,
@@ -35,7 +38,6 @@ namespace quality::minimap::reveal
 	enum class CandidateKind : std::uint8_t
 	{
 		None,
-		Chest,
 		Grave,
 		Fountain,
 		Sink,
@@ -54,9 +56,9 @@ namespace quality::minimap::reveal
 		int y = 0;
 		CandidateKind kind = CandidateKind::None;
 		bool available = true;
+		int itemType = -1;
 		bool identified = true;
 		bool hasLoot = false;
-		bool playerOwned = false;
 		bool lootBag = false;
 	};
 
@@ -65,27 +67,19 @@ namespace quality::minimap::reveal
 		std::uint32_t uid = 0;
 		int x = 0;
 		int y = 0;
-		Kind kind = Kind::Unused;
+		Kind kind = Kind::Green;
 	};
 
 	constexpr bool isInteractable(const CandidateKind kind)
 	{
-		return kind == CandidateKind::Chest || kind == CandidateKind::Grave
-			|| kind == CandidateKind::Fountain || kind == CandidateKind::Sink;
+		return kind == CandidateKind::Grave || kind == CandidateKind::Fountain
+			|| kind == CandidateKind::Sink;
 	}
 
 	constexpr bool eligibleGroundGold(const int amount,
 		const std::uint32_t containerUid)
 	{
 		return amount > 0 && containerUid == 0;
-	}
-
-	constexpr int roughRockItemType = 125;
-
-	constexpr bool eligibleRevealedGroundItem(const int itemType,
-		const bool identified)
-	{
-		return itemType != roughRockItemType || !identified;
 	}
 
 	constexpr bool eligible(const Candidate& candidate, const bool used)
@@ -96,7 +90,6 @@ namespace quality::minimap::reveal
 		}
 		switch ( candidate.kind )
 		{
-			case CandidateKind::Chest:
 			case CandidateKind::Grave:
 			case CandidateKind::Fountain:
 			case CandidateKind::Sink:
@@ -104,8 +97,13 @@ namespace quality::minimap::reveal
 			case CandidateKind::BreakableContainer:
 				return candidate.hasLoot;
 			case CandidateKind::Item:
-				return (!candidate.identified || !candidate.playerOwned)
-					&& !candidate.lootBag;
+			{
+				const auto appearance = quality::minimap::items::appearance(
+					candidate.itemType, candidate.identified, candidate.lootBag);
+				return appearance == quality::minimap::items::Appearance::Green
+					|| appearance
+						== quality::minimap::items::Appearance::ShinyYellow;
+			}
 			case CandidateKind::Gold:
 				return true;
 			case CandidateKind::Exit:
@@ -117,14 +115,29 @@ namespace quality::minimap::reveal
 		}
 	}
 
-	constexpr Kind markerKind(const CandidateKind kind)
+	constexpr bool immediateBlue(const Candidate& candidate)
 	{
-		switch ( kind )
+		return candidate.kind == CandidateKind::Item
+			&& quality::minimap::items::appearance(candidate.itemType,
+				candidate.identified, candidate.lootBag)
+				== quality::minimap::items::Appearance::Blue;
+	}
+
+	constexpr Kind markerKind(const Candidate& candidate)
+	{
+		switch ( candidate.kind )
 		{
+			case CandidateKind::Grave:
+			case CandidateKind::Fountain:
+			case CandidateKind::Sink:
+				return Kind::ShinyYellow;
+			case CandidateKind::Item:
+				return quality::minimap::items::isOrb(candidate.itemType)
+					? Kind::ShinyYellow : Kind::Green;
 			case CandidateKind::Exit: return Kind::Exit;
 			case CandidateKind::Workbench: return Kind::Workbench;
 			case CandidateKind::Cauldron: return Kind::Cauldron;
-			default: return Kind::Unused;
+			default: return Kind::Green;
 		}
 	}
 
@@ -191,7 +204,7 @@ namespace quality::minimap::reveal
 				}
 				refreshed[candidate.uid] = {
 					candidate.uid, candidate.x, candidate.y,
-					markerKind(candidate.kind),
+					markerKind(candidate),
 				};
 			}
 			markers_ = std::move(refreshed);
@@ -219,14 +232,14 @@ namespace quality::minimap::reveal
 					{
 						markers_[candidate.uid] = {
 							candidate.uid, candidate.x, candidate.y,
-							markerKind(candidate.kind),
+							markerKind(candidate),
 						};
 					}
 					continue;
 				}
 				marker->second.x = candidate.x;
 				marker->second.y = candidate.y;
-				marker->second.kind = markerKind(candidate.kind);
+				marker->second.kind = markerKind(candidate);
 			}
 			for ( auto marker = markers_.begin(); marker != markers_.end(); )
 			{

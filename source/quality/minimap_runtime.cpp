@@ -20,6 +20,7 @@
 #include "minimap_chests.hpp"
 #include "minimap_creatures.hpp"
 #include "minimap_items.hpp"
+#include "minimap_network.hpp"
 #include "minimap_reveal.hpp"
 #include "minimap_runtime.hpp"
 #include "runtime_layout.hpp"
@@ -90,8 +91,17 @@ namespace
 	constexpr std::uintptr_t netServerRva = 0x0100F270;
 	constexpr std::uintptr_t netClientsPointerRva = 0x0100F278;
 	constexpr std::uintptr_t netSocketRva = 0x0100F280;
-	constexpr std::uintptr_t udpRecvIatRva = 0x00ACCD58;
+	constexpr std::uintptr_t netPacketRva = 0x0100F288;
 	constexpr std::uintptr_t udpSendIatRva = 0x00ACCD60;
+	constexpr std::uintptr_t sendPacketRva = 0x005C53B0;
+	constexpr std::uintptr_t clientHandlePacketRva = 0x005C0DD0;
+	constexpr std::uintptr_t serverHandlePacketRva = 0x005C5A20;
+	constexpr std::array<std::uintptr_t, 2> clientHandlePacketCallRvas = {
+		0x005C0C34, 0x005C0D90,
+	};
+	constexpr std::array<std::uintptr_t, 2> serverHandlePacketCallRvas = {
+		0x005C5884, 0x005C59E0,
+	};
 	constexpr std::uintptr_t mapRva = mapWidthRva - 64;
 	constexpr std::uintptr_t clientnumRva = 0x01052DC8;
 	constexpr std::uintptr_t followerMenusRva = 0x00C28FB0;
@@ -106,7 +116,6 @@ namespace
 	constexpr std::size_t entitySkill = 0x288;
 	constexpr std::size_t entityFlags = 0x378;
 	constexpr std::size_t entityChildren = 0x3A0;
-	constexpr std::size_t entityParent = 0x3B0;
 	constexpr std::size_t entityBehavior = 0x1350;
 	constexpr std::size_t playerEntity = 0x18;
 	constexpr std::size_t playerCamera = 0x08;
@@ -118,7 +127,6 @@ namespace
 	constexpr std::size_t skillMonsterAllyIndex = 42;
 	constexpr std::size_t skillShadowTaggedUid = 54;
 	constexpr std::size_t skillShowOnMap = 59;
-	constexpr std::size_t skillItemOriginalOwner = 21;
 	constexpr std::size_t skillItemContainer = 29;
 	constexpr std::size_t skillItemType = 10;
 	constexpr std::size_t skillItemIdentified = 15;
@@ -129,6 +137,7 @@ namespace
 	constexpr std::size_t skillColliderContainedEntity = 15;
 	constexpr std::size_t skillChestVoidState = 17;
 	constexpr std::size_t itemCount = 0x0A;
+	constexpr std::size_t itemIdentified = 0x10;
 	constexpr std::size_t statType = 0xE0;
 	constexpr std::size_t statName = 0xEC;
 	constexpr std::size_t statHp = 0x220;
@@ -184,6 +193,10 @@ namespace
 		0x48, 0x89, 0x5C, 0x24, 0x08, 0x48, 0x89, 0x6C,
 		0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18, 0x57,
 	};
+	constexpr std::array<std::uint8_t, 16> sendPacketSignature = {
+		0x40, 0x57, 0x48, 0x83, 0xEC, 0x30, 0x80, 0x3D,
+		0x11, 0xB4, 0xA8, 0x00, 0x00, 0x49, 0x8B, 0xF8,
+	};
 	constexpr std::size_t updateAllyFollowerFrameHookBytes = 15;
 	constexpr std::size_t getStatsHookBytes = 14;
 	constexpr std::array<std::array<std::uint8_t, 5>, 4> exitTooltipCalls = {{
@@ -216,6 +229,16 @@ namespace
 	constexpr std::array<std::uint8_t, 5> terrainImageDrawCall = {
 		0xE8, 0x6C, 0xA4, 0x1A, 0x00,
 	};
+	constexpr std::array<std::array<std::uint8_t, 5>, 2>
+		clientHandlePacketCalls = {{
+			{0xE8, 0x97, 0x01, 0x00, 0x00},
+			{0xE8, 0x3B, 0x00, 0x00, 0x00},
+		}};
+	constexpr std::array<std::array<std::uint8_t, 5>, 2>
+		serverHandlePacketCalls = {{
+			{0xE8, 0x97, 0x01, 0x00, 0x00},
+			{0xE8, 0x3B, 0x00, 0x00, 0x00},
+		}};
 	constexpr std::array<std::uint8_t, 46> worldTooltipHeightPrimary = {
 		0x8B, 0x48, 0x30, 0x89, 0x4C, 0x24, 0x78, 0x48,
 		0x8D, 0x8B, 0x48, 0x01, 0x00, 0x00, 0x48, 0x83,
@@ -272,7 +295,7 @@ namespace
 	enum class VisualKind
 	{
 		Exit, Boulder, Workbench, Cauldron, Minotaur, ShadowCreature,
-		Player, Follower, DetectedCreature, Unused,
+		Player, Follower, DetectedCreature, Green, ShinyYellow,
 	};
 
 	struct Visual
@@ -318,7 +341,8 @@ namespace
 		IpAddress address;
 	};
 	using UdpSendFn = int (*)(UdpSocket, int, UdpPacket*);
-	using UdpRecvFn = int (*)(UdpSocket, UdpPacket*);
+	using SendPacketFn = int (*)(UdpSocket, int, UdpPacket*, int, bool);
+	using HandlePacketFn = void (*)();
 	using UpdateAllyFollowerFrameFn = void (*)(int);
 	using GetMonsterLocalizedNameFn = MsvcString* (*)(MsvcString*, int, void*);
 	using MsvcStringDestroyFn = void (*)(MsvcString*);
@@ -364,7 +388,9 @@ namespace
 	CreateDialogueFn createDialogue = nullptr;
 	MessagePlayerFn messagePlayer = nullptr;
 	UdpSendFn udpSend = nullptr;
-	UdpRecvFn udpRecv = nullptr;
+	SendPacketFn sendPacket = nullptr;
+	HandlePacketFn clientHandlePacket = nullptr;
+	HandlePacketFn serverHandlePacket = nullptr;
 	UpdateAllyFollowerFrameFn originalUpdateAllyFollowerFrame = nullptr;
 	GetStatsFn originalGetStats = nullptr;
 	GetMonsterLocalizedNameFn getMonsterLocalizedName = nullptr;
@@ -401,9 +427,8 @@ namespace
 		publishedExitCounts {};
 	std::array<bool, quality::minimap::creatures::maximumPlayers>
 		publishedExitCountsValid {};
-	quality::minimap::items::State partyItemState;
 	quality::minimap::chests::State chestState;
-	std::unordered_set<std::uint32_t> seenWorldItems;
+	std::vector<quality::minimap::reveal::Marker> immediateBlueItems;
 	bool inMinimapDraw = false;
 	bool inFollowerRosterDraw = false;
 	std::unordered_map<std::uint8_t*, std::array<std::uint8_t,
@@ -471,16 +496,6 @@ namespace
 		return field<std::uint32_t>(entity, entityUid);
 	}
 
-	std::uint64_t addressKey(const IpAddress address)
-	{
-		return (static_cast<std::uint64_t>(address.host) << 16) | address.port;
-	}
-
-	bool sameAddress(const IpAddress left, const IpAddress right)
-	{
-		return left.host == right.host && left.port == right.port;
-	}
-
 	std::uint8_t* findEntity(const List* entities, const std::uint32_t entityUid)
 	{
 		if ( !entities || entityUid == 0 )
@@ -504,9 +519,6 @@ namespace
 		Request = 2,
 		Refresh = 3,
 		Acknowledgement = 4,
-		ItemPickedUp = 5,
-		ItemDropped = 6,
-		ItemRemoved = 7,
 		ChestState = 8,
 	};
 	enum class RosterPacketKind : std::uint8_t
@@ -526,7 +538,7 @@ namespace
 
 	constexpr std::size_t packetSize = 48;
 	constexpr std::size_t rosterPacketSize = 184;
-	constexpr std::size_t sightingPacketSize = 1024;
+	constexpr std::size_t sightingPacketSize = 512;
 	constexpr std::size_t sightingHeaderSize = 36;
 	constexpr std::size_t sightingUidsPerPacket =
 		(sightingPacketSize - sightingHeaderSize) / sizeof(std::uint32_t);
@@ -534,7 +546,7 @@ namespace
 	struct PendingPacket
 	{
 		std::vector<std::uint8_t> bytes;
-		IpAddress destination {};
+		int targetPlayer = -1;
 		std::uint32_t createdTick = 0;
 		std::uint32_t lastSentTick = 0;
 	};
@@ -542,9 +554,10 @@ namespace
 	std::uint32_t localGeneration = 0;
 	std::uint32_t networkSequence = 1;
 	std::unordered_map<std::uint32_t, PendingPacket> pendingPackets;
-	std::unordered_map<std::uint64_t, std::uint32_t> clientGenerations;
+	std::array<std::uint32_t, quality::minimap::creatures::maximumPlayers>
+		clientGenerations {};
 	std::unordered_set<std::uint64_t> appliedPackets;
-	std::unordered_set<std::uint64_t> sightingCapableClients;
+	std::unordered_set<int> sightingCapableClients;
 	bool hostSightingCapable = false;
 	std::uint32_t partySightingSequence = 1;
 	std::uint32_t lastSightingPublishTick = 0;
@@ -595,6 +608,12 @@ namespace
 		return *reinterpret_cast<int*>(base + multiplayerRva);
 	}
 
+	int localPlayerSlot()
+	{
+		return multiplayerMode() == layout::multiplayerClient
+			? *reinterpret_cast<int*>(base + clientnumRva) : 0;
+	}
+
 	bool floorMatches(const std::uint8_t* bytes)
 	{
 		return static_cast<std::int32_t>(readU32(bytes, 16))
@@ -612,9 +631,10 @@ namespace
 	{
 		std::array<std::uint8_t, packetSize> bytes {};
 		bytes[0] = 'Q'; bytes[1] = 'M'; bytes[2] = 'R'; bytes[3] = 'F';
-		bytes[4] = 4;
+		bytes[4] = quality::minimap::network::protocolVersion;
 		bytes[5] = static_cast<std::uint8_t>(kind);
 		bytes[6] = *reinterpret_cast<std::uint8_t*>(base + secretLevelRva) ? 1 : 0;
+		bytes[7] = static_cast<std::uint8_t>(localPlayerSlot());
 		writeU32(bytes.data(), 8, sequence);
 		writeU32(bytes.data(), 12, acknowledgement);
 		writeU32(bytes.data(), 16, static_cast<std::uint32_t>(
@@ -632,14 +652,17 @@ namespace
 	}
 
 	void sendBytes(const std::uint8_t* bytes, const std::size_t size,
-		const IpAddress destination)
+		const int targetPlayer)
 	{
-		if ( !udpSend )
+		if ( !sendPacket )
 		{
 			return;
 		}
+		const int hostNumber = quality::minimap::network::hostNumberForTarget(
+			multiplayerMode(), targetPlayer);
+		if ( hostNumber < 0 ) { return; }
 		UdpSocket socket = *reinterpret_cast<UdpSocket*>(base + netSocketRva);
-		if ( !socket || destination.host == 0 || destination.port == 0 )
+		if ( !socket )
 		{
 			return;
 		}
@@ -648,14 +671,23 @@ namespace
 		packet.data = const_cast<std::uint8_t*>(bytes);
 		packet.len = static_cast<int>(size);
 		packet.maxlen = packet.len;
-		packet.address = destination;
-		udpSend(socket, -1, &packet);
+		if ( multiplayerMode() == layout::multiplayerClient )
+		{
+			packet.address = *reinterpret_cast<IpAddress*>(base + netServerRva);
+		}
+		else
+		{
+			auto* clients = *reinterpret_cast<IpAddress**>(
+				base + netClientsPointerRva);
+			if ( clients ) { packet.address = clients[targetPlayer - 1]; }
+		}
+		sendPacket(socket, -1, &packet, hostNumber, false);
 	}
 
 	template <typename T>
-	void sendBytes(const T& bytes, const IpAddress destination)
+	void sendBytes(const T& bytes, const int targetPlayer)
 	{
-		sendBytes(bytes.data(), bytes.size(), destination);
+		sendBytes(bytes.data(), bytes.size(), targetPlayer);
 	}
 
 	std::array<std::uint8_t, sightingPacketSize> makeSightingPacket(
@@ -666,10 +698,11 @@ namespace
 	{
 		std::array<std::uint8_t, sightingPacketSize> bytes {};
 		bytes[0] = 'Q'; bytes[1] = 'M'; bytes[2] = 'S'; bytes[3] = 'I';
-		bytes[4] = 1;
+		bytes[4] = quality::minimap::network::sightingProtocolVersion;
 		bytes[5] = 1;
 		bytes[6] = *reinterpret_cast<std::uint8_t*>(base + secretLevelRva) ? 1 : 0;
 		bytes[7] = static_cast<std::uint8_t>(reporter);
+		bytes[15] = static_cast<std::uint8_t>(localPlayerSlot());
 		writeU32(bytes.data(), 8, sequence);
 		writeU32(bytes.data(), 16, static_cast<std::uint32_t>(
 			*reinterpret_cast<std::int32_t*>(base + currentLevelRva)));
@@ -686,7 +719,7 @@ namespace
 		return bytes;
 	}
 
-	void sendSightingSnapshot(const IpAddress destination,
+	void sendSightingSnapshot(const int targetPlayer,
 		const std::uint32_t generation, const int reporter,
 		std::uint32_t sequence, const std::unordered_set<std::uint32_t>& sightings)
 	{
@@ -704,7 +737,7 @@ namespace
 			const std::uint32_t* first = count ? sorted.data() + offset : nullptr;
 			sendBytes(makeSightingPacket(reporter, sequence, generation,
 				static_cast<std::uint16_t>(chunk),
-				static_cast<std::uint16_t>(chunks), first, count), destination);
+				static_cast<std::uint16_t>(chunks), first, count), targetPlayer);
 		}
 	}
 
@@ -751,7 +784,7 @@ namespace
 		return true;
 	}
 
-	void queueReliable(const PacketKind kind, const IpAddress destination,
+	void queueReliable(const PacketKind kind, const int targetPlayer,
 		const std::uint32_t generation,
 		const ItemPacketPayload payload = {})
 	{
@@ -763,18 +796,18 @@ namespace
 		PendingPacket pending;
 		const auto bytes = makePacket(kind, sequence, 0, generation, payload);
 		pending.bytes.assign(bytes.begin(), bytes.end());
-		pending.destination = destination;
+		pending.targetPlayer = targetPlayer;
 		pending.createdTick = *reinterpret_cast<std::uint32_t*>(base + ticksRva);
 		pendingPackets[sequence] = pending;
-		sendBytes(pending.bytes, destination);
+		sendBytes(pending.bytes, targetPlayer);
 		pendingPackets[sequence].lastSentTick = pending.createdTick;
 	}
 
-	void sendAcknowledgement(const IpAddress destination,
+	void sendAcknowledgement(const int targetPlayer,
 		const std::uint32_t sequence)
 	{
 		sendBytes(makePacket(PacketKind::Acknowledgement, 0, sequence,
-			localGeneration), destination);
+			localGeneration), targetPlayer);
 	}
 
 	std::array<std::uint8_t, rosterPacketSize> makeRosterPacket(
@@ -784,10 +817,11 @@ namespace
 	{
 		std::array<std::uint8_t, rosterPacketSize> bytes {};
 		bytes[0] = 'Q'; bytes[1] = 'F'; bytes[2] = 'R'; bytes[3] = 'S';
-		bytes[4] = 1;
+		bytes[4] = quality::minimap::network::rosterProtocolVersion;
 		bytes[5] = static_cast<std::uint8_t>(kind);
 		bytes[6] = *reinterpret_cast<std::uint8_t*>(base + secretLevelRva) ? 1 : 0;
 		bytes[7] = static_cast<std::uint8_t>(entry.owner);
+		bytes[15] = static_cast<std::uint8_t>(localPlayerSlot());
 		writeU32(bytes.data(), 8, sequence);
 		writeU32(bytes.data(), 16, static_cast<std::uint32_t>(
 			*reinterpret_cast<std::int32_t*>(base + currentLevelRva)));
@@ -808,7 +842,7 @@ namespace
 	}
 
 	void queueRosterReliable(const RosterPacketKind kind,
-		const IpAddress destination, const std::uint32_t generation,
+		const int targetPlayer, const std::uint32_t generation,
 		const quality::follower_roster::Entry& entry)
 	{
 		std::uint32_t sequence = networkSequence++;
@@ -816,11 +850,11 @@ namespace
 		const auto bytes = makeRosterPacket(kind, sequence, generation, entry);
 		PendingPacket pending;
 		pending.bytes.assign(bytes.begin(), bytes.end());
-		pending.destination = destination;
+		pending.targetPlayer = targetPlayer;
 		pending.createdTick = *reinterpret_cast<std::uint32_t*>(base + ticksRva);
 		pending.lastSentTick = pending.createdTick;
 		pendingPackets[sequence] = pending;
-		sendBytes(pending.bytes, destination);
+		sendBytes(pending.bytes, targetPlayer);
 	}
 
 	void flushPendingPackets()
@@ -840,7 +874,7 @@ namespace
 			}
 			if ( now - packet->second.lastSentTick >= 15U )
 			{
-				sendBytes(packet->second.bytes, packet->second.destination);
+				sendBytes(packet->second.bytes, packet->second.targetPlayer);
 				packet->second.lastSentTick = now;
 			}
 			++packet;
@@ -872,21 +906,6 @@ namespace
 		for ( auto& state : revealStates ) { state.observeUses(entityUid, uses); }
 	}
 
-	bool anyRevealContains(const std::uint32_t entityUid)
-	{
-		for ( const auto& state : revealStates )
-		{
-			if ( state.contains(entityUid) ) { return true; }
-		}
-		return false;
-	}
-
-	void rebindRevealAll(const std::uint32_t oldUid,
-		const std::uint32_t newUid, const int x, const int y)
-	{
-		for ( auto& state : revealStates ) { state.rebind(oldUid, newUid, x, y); }
-	}
-
 	ItemPacketPayload exitCountsPayload(const int viewer)
 	{
 		const auto counts = exitCreatureCountsForViewer(viewer);
@@ -902,23 +921,17 @@ namespace
 		{
 			return;
 		}
-		auto* clients = *reinterpret_cast<IpAddress**>(base + netClientsPointerRva);
 		const auto* disconnected = base + clientDisconnectedRva;
-		if ( !clients )
-		{
-			return;
-		}
 		for ( int player = 1; player < 4; ++player )
 		{
 			if ( disconnected[player] )
 			{
 				continue;
 			}
-			const IpAddress destination = clients[player - 1];
-			const auto generation = clientGenerations.find(addressKey(destination));
-			if ( generation != clientGenerations.end() )
+			const auto generation = clientGenerations[player];
+			if ( generation != 0 )
 			{
-				queueReliable(kind, destination, generation->second, payload);
+				queueReliable(kind, player, generation, payload);
 			}
 		}
 	}
@@ -927,18 +940,15 @@ namespace
 		const quality::follower_roster::Entry& entry)
 	{
 		if ( multiplayerMode() != 1 ) { return; }
-		auto* clients = *reinterpret_cast<IpAddress**>(base + netClientsPointerRva);
 		const auto* disconnected = base + clientDisconnectedRva;
-		if ( !clients ) { return; }
 		for ( int player = 1; player < quality::follower_roster::maximumPlayers;
 			++player )
 		{
 			if ( disconnected[player] ) { continue; }
-			const IpAddress destination = clients[player - 1];
-			const auto generation = clientGenerations.find(addressKey(destination));
-			if ( generation != clientGenerations.end() )
+			const auto generation = clientGenerations[player];
+			if ( generation != 0 )
 			{
-				queueRosterReliable(kind, destination, generation->second, entry);
+				queueRosterReliable(kind, player, generation, entry);
 			}
 		}
 	}
@@ -1010,26 +1020,9 @@ namespace
 		sharedFollowerRoster = std::move(current);
 	}
 
-	ItemPacketPayload itemPayload(const quality::minimap::items::Marker& marker)
-	{
-		return {marker.markerId, marker.entityUid, marker.inventoryKey,
-			static_cast<std::uint16_t>(std::clamp(marker.x, 0, 65535)),
-			static_cast<std::uint16_t>(std::clamp(marker.y, 0, 65535))};
-	}
-
-	void broadcastItem(const PacketKind kind,
-		const quality::minimap::items::Marker& marker)
-	{
-		if ( multiplayerMode() == 1 )
-		{
-			broadcastToReadyClients(kind, itemPayload(marker));
-		}
-	}
-
 	ItemPacketPayload chestPayload(const quality::minimap::chests::Update& update)
 	{
-		return {update.uid, 0,
-			(update.interacted ? 1U : 0U) | (update.nonempty ? 2U : 0U),
+		return {update.uid, 0, static_cast<std::uint32_t>(update.contents),
 			static_cast<std::uint16_t>(std::clamp(update.x, 0, 65535)),
 			static_cast<std::uint16_t>(std::clamp(update.y, 0, 65535))};
 	}
@@ -1051,7 +1044,7 @@ namespace
 		if ( multiplayerMode() == 2 )
 		{
 			queueReliable(PacketKind::Request,
-				*reinterpret_cast<IpAddress*>(base + netServerRva), localGeneration);
+				0, localGeneration);
 		}
 	}
 
@@ -1073,9 +1066,8 @@ namespace
 		lastSightingPublishTick = 0;
 		for ( auto& assembly : remoteSightingAssemblies ) { assembly = {}; }
 		partySightingAssembly = {};
-		partyItemState.reset();
 		chestState.reset();
-		seenWorldItems.clear();
+		immediateBlueItems.clear();
 		sharedFollowerRoster.reset();
 		publishedFollowerRoster.reset();
 		syntheticFollowerStats.clear();
@@ -1092,7 +1084,7 @@ namespace
 		if ( multiplayerMode() == 2 )
 		{
 			queueReliable(PacketKind::Ready,
-				*reinterpret_cast<IpAddress*>(base + netServerRva), localGeneration,
+				0, localGeneration,
 				{sightingCapability});
 		}
 	}
@@ -1101,7 +1093,8 @@ namespace
 	{
 		return packet && packet->data && packet->len == static_cast<int>(packetSize)
 			&& std::memcmp(packet->data, "QMRF", 4) == 0
-			&& packet->data[4] == 4
+			&& quality::minimap::network::compatible(
+				quality::minimap::network::Stream::State, packet->data[4])
 			&& packet->data[5] >= static_cast<std::uint8_t>(PacketKind::Ready)
 			&& packet->data[5] <= static_cast<std::uint8_t>(PacketKind::ChestState);
 	}
@@ -1111,7 +1104,8 @@ namespace
 		return packet && packet->data
 			&& packet->len == static_cast<int>(rosterPacketSize)
 			&& std::memcmp(packet->data, "QFRS", 4) == 0
-			&& packet->data[4] == 1
+			&& quality::minimap::network::compatible(
+				quality::minimap::network::Stream::Roster, packet->data[4])
 			&& packet->data[5] >= static_cast<std::uint8_t>(
 				RosterPacketKind::Upsert)
 			&& packet->data[5] <= static_cast<std::uint8_t>(
@@ -1123,7 +1117,17 @@ namespace
 		return packet && packet->data
 			&& packet->len == static_cast<int>(sightingPacketSize)
 			&& std::memcmp(packet->data, "QMSI", 4) == 0
-			&& packet->data[4] == 1 && packet->data[5] == 1;
+			&& quality::minimap::network::compatible(
+				quality::minimap::network::Stream::Sightings, packet->data[4])
+			&& packet->data[5] == 1;
+	}
+
+	bool hasQualityMagic(const UdpPacket* packet)
+	{
+		return packet && packet->data && packet->len >= 4
+			&& (std::memcmp(packet->data, "QMRF", 4) == 0
+				|| std::memcmp(packet->data, "QFRS", 4) == 0
+				|| std::memcmp(packet->data, "QMSI", 4) == 0);
 	}
 
 	void processSightingPacket(const UdpPacket* packet)
@@ -1132,22 +1136,14 @@ namespace
 		std::vector<std::uint32_t> complete;
 		if ( multiplayerMode() == 1 )
 		{
-			auto* clients = *reinterpret_cast<IpAddress**>(base + netClientsPointerRva);
-			int player = -1;
-			for ( int index = 0; clients && index < 3; ++index )
-			{
-				if ( sameAddress(clients[index], packet->address) )
-				{
-					player = index + 1;
-					break;
-				}
-			}
-			const auto key = addressKey(packet->address);
-			const auto generation = clientGenerations.find(key);
-			if ( !validViewer(player) || generation == clientGenerations.end()
+			const int player = packet->data[15];
+			const auto generation = validViewer(player)
+				? clientGenerations[player] : 0;
+			if ( !quality::minimap::network::validSender(1, player)
+				|| generation == 0 || packet->data[7] != player
 				|| !quality::minimap::creatures::acceptSightingSnapshot(
-					sightingCapableClients.count(key) != 0, true, matchingFloor,
-					readU32(packet->data, 24) == generation->second,
+					sightingCapableClients.count(player) != 0, true, matchingFloor,
+					readU32(packet->data, 24) == generation,
 					readU32(packet->data, 8),
 					remoteSightingAssemblies[player].sequence) )
 			{
@@ -1161,8 +1157,7 @@ namespace
 		}
 		else if ( multiplayerMode() == layout::multiplayerClient
 			&& quality::minimap::creatures::acceptSightingSnapshot(true,
-				sameAddress(packet->address,
-					*reinterpret_cast<IpAddress*>(base + netServerRva)),
+				packet->data[15] == 0,
 				matchingFloor, readU32(packet->data, 24) == localGeneration,
 				readU32(packet->data, 8), partySightingAssembly.sequence) )
 		{
@@ -1179,14 +1174,18 @@ namespace
 	void processRosterPacket(const UdpPacket* packet)
 	{
 		if ( !floorMatches(packet->data) ) { return; }
+		const int sender = packet->data[15];
+		if ( !quality::minimap::network::validSender(multiplayerMode(), sender) )
+		{
+			return;
+		}
 		const auto sequence = readU32(packet->data, 8);
-		sendAcknowledgement(packet->address, sequence);
-		const std::uint64_t delivery = addressKey(packet->address)
-			^ (static_cast<std::uint64_t>(sequence) << 1);
+		sendAcknowledgement(sender, sequence);
+		const auto delivery = quality::minimap::network::deliveryKey(sender,
+			sequence);
 		if ( !appliedPackets.insert(delivery).second ) { return; }
 		if ( multiplayerMode() != layout::multiplayerClient
-			|| !quality::minimap::reveal::acceptClientRefresh(sameAddress(
-				packet->address, *reinterpret_cast<IpAddress*>(base + netServerRva)),
+			|| !quality::minimap::reveal::acceptClientRefresh(sender == 0,
 				true, readU32(packet->data, 24), localGeneration) )
 		{
 			return;
@@ -1216,12 +1215,17 @@ namespace
 	void processQualityPacket(const UdpPacket* packet)
 	{
 		const auto kind = static_cast<PacketKind>(packet->data[5]);
+		const int sender = packet->data[7];
+		if ( !quality::minimap::network::validSender(multiplayerMode(), sender) )
+		{
+			return;
+		}
 		if ( kind == PacketKind::Acknowledgement )
 		{
 			const auto acknowledged = readU32(packet->data, 12);
 			const auto pending = pendingPackets.find(acknowledged);
 			if ( pending != pendingPackets.end()
-				&& sameAddress(pending->second.destination, packet->address) )
+				&& pending->second.targetPlayer == sender )
 			{
 				pendingPackets.erase(pending);
 			}
@@ -1232,9 +1236,9 @@ namespace
 			return;
 		}
 		const auto sequence = readU32(packet->data, 8);
-		sendAcknowledgement(packet->address, sequence);
-		const std::uint64_t delivery = addressKey(packet->address)
-			^ (static_cast<std::uint64_t>(sequence) << 1);
+		sendAcknowledgement(sender, sequence);
+		const auto delivery = quality::minimap::network::deliveryKey(sender,
+			sequence);
 		if ( !appliedPackets.insert(delivery).second )
 		{
 			return;
@@ -1243,47 +1247,32 @@ namespace
 		if ( multiplayerMode() == 1
 			&& (kind == PacketKind::Ready || kind == PacketKind::Request) )
 		{
-			auto* clients = *reinterpret_cast<IpAddress**>(base + netClientsPointerRva);
-			int requestingPlayer = -1;
-			if ( clients )
-			{
-				for ( int index = 0; index < 3; ++index )
-				{
-					if ( sameAddress(clients[index], packet->address) )
-					{
-						requestingPlayer = index + 1;
-						break;
-					}
-				}
-			}
-			if ( requestingPlayer < 0 )
+			const int requestingPlayer = sender;
+			const auto* disconnected = base + clientDisconnectedRva;
+			if ( !validViewer(requestingPlayer)
+				|| disconnected[requestingPlayer] )
 			{
 				return;
 			}
-			auto& accepted = clientGenerations[addressKey(packet->address)];
+			auto& accepted = clientGenerations[requestingPlayer];
 			if ( kind == PacketKind::Ready )
 			{
-				// The same address can belong to a new session whose counter restarted.
+				// A newly ready player slot replaces any previous session generation.
 				accepted = generation;
 				if ( readU32(packet->data, 32) == sightingCapability )
 				{
-					sightingCapableClients.insert(addressKey(packet->address));
-					sendSightingSnapshot(packet->address, accepted, 0xFF,
+					sightingCapableClients.insert(requestingPlayer);
+					sendSightingSnapshot(requestingPlayer, accepted, 0xFF,
 						partySightingSequence, localSightings.combined());
 				}
-				for ( const auto& marker : partyItemState.markers() )
+				for ( const auto& update : chestState.snapshots() )
 				{
-					queueReliable(PacketKind::ItemDropped, packet->address,
-						accepted, itemPayload(marker));
-				}
-				for ( const auto& update : chestState.updates() )
-				{
-					queueReliable(PacketKind::ChestState, packet->address,
+					queueReliable(PacketKind::ChestState, requestingPlayer,
 						accepted, chestPayload(update));
 				}
 				for ( const auto& follower : publishedFollowerRoster.entries() )
 				{
-					queueRosterReliable(RosterPacketKind::Upsert, packet->address,
+					queueRosterReliable(RosterPacketKind::Upsert, requestingPlayer,
 						accepted, follower.second);
 				}
 			}
@@ -1292,16 +1281,13 @@ namespace
 			{
 				exitRevealActivated[requestingPlayer] = true;
 				publishedExitCountsValid[requestingPlayer] = false;
-				queueReliable(PacketKind::Refresh, packet->address, accepted,
+				queueReliable(PacketKind::Refresh, requestingPlayer, accepted,
 					exitCountsPayload(requestingPlayer));
 			}
 		}
 		else if ( multiplayerMode() == 2
-			&& (kind == PacketKind::Refresh || kind == PacketKind::ItemPickedUp
-				|| kind == PacketKind::ItemDropped || kind == PacketKind::ItemRemoved
-				|| kind == PacketKind::ChestState)
-			&& quality::minimap::reveal::acceptClientRefresh(sameAddress(
-				packet->address, *reinterpret_cast<IpAddress*>(base + netServerRva)),
+			&& (kind == PacketKind::Refresh || kind == PacketKind::ChestState)
+			&& quality::minimap::reveal::acceptClientRefresh(sender == 0,
 				true, generation, localGeneration) )
 		{
 			if ( kind == PacketKind::Refresh )
@@ -1324,32 +1310,16 @@ namespace
 					readU32(packet->data, 40), readU16(packet->data, 44),
 					readU16(packet->data, 46),
 				};
-				if ( kind == PacketKind::ChestState )
+				if ( kind == PacketKind::ChestState
+					&& quality::minimap::chests::validContentsValue(
+						payload.inventoryKey) )
 				{
-					const std::uint32_t flags = payload.inventoryKey;
 					const quality::minimap::chests::Update update {
 						payload.markerId, payload.x, payload.y,
-						(flags & 1U) != 0, (flags & 2U) != 0,
+						static_cast<quality::minimap::chests::Contents>(
+							payload.inventoryKey),
 					};
 					chestState.apply(update);
-					if ( update.interacted )
-					{
-						markRevealUsedAll(update.uid);
-					}
-				}
-				else if ( kind == PacketKind::ItemDropped )
-				{
-					partyItemState.applyDrop(payload.markerId, payload.entityUid,
-						payload.inventoryKey, payload.x, payload.y);
-				}
-				else if ( kind == PacketKind::ItemPickedUp )
-				{
-					partyItemState.pickUp(payload.entityUid, payload.inventoryKey);
-					partyItemState.remove(payload.entityUid);
-				}
-				else
-				{
-					partyItemState.remove(payload.entityUid);
 				}
 			}
 		}
@@ -1363,32 +1333,25 @@ namespace
 		return result;
 	}
 
-	int udpRecvHook(UdpSocket socket, UdpPacket* packet)
+	bool consumeQualityPacket(UdpPacket* packet)
 	{
-		for ( ;; )
-		{
-			const int result = udpRecv(socket, packet);
-			if ( result <= 0 )
-			{
-				return result;
-			}
-			if ( isQualityPacket(packet) )
-			{
-				processQualityPacket(packet);
-				continue;
-			}
-			if ( isRosterPacket(packet) )
-			{
-				processRosterPacket(packet);
-				continue;
-			}
-			if ( isSightingPacket(packet) )
-			{
-				processSightingPacket(packet);
-				continue;
-			}
-			return result;
-		}
+		if ( isQualityPacket(packet) ) { processQualityPacket(packet); }
+		else if ( isRosterPacket(packet) ) { processRosterPacket(packet); }
+		else if ( isSightingPacket(packet) ) { processSightingPacket(packet); }
+		else { return hasQualityMagic(packet); }
+		return true;
+	}
+
+	void clientHandlePacketHook()
+	{
+		auto* packet = *reinterpret_cast<UdpPacket**>(base + netPacketRva);
+		if ( !consumeQualityPacket(packet) ) { clientHandlePacket(); }
+	}
+
+	void serverHandlePacketHook()
+	{
+		auto* packet = *reinterpret_cast<UdpPacket**>(base + netPacketRva);
+		if ( !consumeQualityPacket(packet) ) { serverHandlePacket(); }
 	}
 
 	std::uint8_t visibilityAt(const int x, const int y)
@@ -1407,7 +1370,7 @@ namespace
 	}
 
 	std::vector<quality::minimap::reveal::Candidate> collectRevealCandidates(
-		List* entities, const std::unordered_set<std::uint32_t>& partyUids)
+		List* entities)
 	{
 		using quality::minimap::reveal::Candidate;
 		using quality::minimap::reveal::CandidateKind;
@@ -1456,14 +1419,6 @@ namespace
 				candidate.available = quality::minimap::reveal::eligibleGroundGold(
 					skill(entity, 0), static_cast<std::uint32_t>(skill(entity, 4)));
 			}
-			else if ( sprite == 188 || sprite == 1791 )
-			{
-				candidate.kind = CandidateKind::Chest;
-				if ( skill(entity, 1) == 1 )
-				{
-					markRevealUsedAll(entityUid);
-				}
-			}
 			else if ( sprite == 224 )
 			{
 				candidate.kind = CandidateKind::Grave;
@@ -1498,18 +1453,8 @@ namespace
 				&& skill(entity, skillItemContainer) == 0 )
 			{
 				candidate.kind = CandidateKind::Item;
+				candidate.itemType = skill(entity, skillItemType);
 				candidate.identified = skill(entity, skillItemIdentified) != 0;
-				candidate.available = quality::minimap::reveal::eligibleRevealedGroundItem(
-					skill(entity, skillItemType), candidate.identified);
-				const auto originalOwner = static_cast<std::uint32_t>(
-					skill(entity, skillItemOriginalOwner));
-				const auto parent = field<std::uint32_t>(entity, entityParent);
-				const bool continuedGreenItem =
-					partyItemState.isTrackedOrdinary(entityUid);
-				candidate.playerOwned = !continuedGreenItem
-					&& (partyUids.count(originalOwner) != 0
-						|| partyUids.count(parent) != 0
-						|| partyItemState.isPartyDropped(entityUid));
 				candidate.lootBag = sprite >= lootBagIndex
 					&& sprite < lootBagIndex + lootBagVariations;
 			}
@@ -1550,24 +1495,29 @@ namespace
 				field<double>(entity, entityX) / 16.0));
 			observation.y = static_cast<int>(std::floor(
 				field<double>(entity, entityY) / 16.0));
-			observation.open = skill(entity, 1) == 1;
 			if ( inspectInventories )
 			{
 				const auto& children = field<List>(entity, entityChildren);
 				auto* inventory = children.first && children.first->element
 					? static_cast<List*>(children.first->element) : nullptr;
-				std::int64_t total = 0;
+				std::int64_t identified = 0;
+				std::int64_t unidentified = 0;
 				for ( Node* itemNode = inventory ? inventory->first : nullptr;
 					itemNode; itemNode = itemNode->next )
 				{
 					auto* item = static_cast<std::uint8_t*>(itemNode->element);
 					if ( item )
 					{
-						total += std::max<int>(0, field<std::int16_t>(item, itemCount));
+						const auto count = std::max<int>(0,
+							field<std::int16_t>(item, itemCount));
+						(field<bool>(item, itemIdentified)
+							? identified : unidentified) += count;
 					}
 				}
-				observation.itemCount = static_cast<int>(std::min<std::int64_t>(
-					total, static_cast<std::int64_t>(INT_MAX)));
+				observation.identifiedCount = static_cast<int>(
+					std::min<std::int64_t>(identified, INT_MAX));
+				observation.unidentifiedCount = static_cast<int>(
+					std::min<std::int64_t>(unidentified, INT_MAX));
 			}
 			observations.push_back(observation);
 		}
@@ -1585,7 +1535,6 @@ namespace
 		}
 		for ( const auto& update : chestState.observeAuthoritative(observations) )
 		{
-			markRevealUsedAll(update.uid);
 			broadcastChest(update);
 		}
 	}
@@ -1594,27 +1543,7 @@ namespace
 	{
 		if ( !validViewer(viewer) ) { return; }
 		auto* entities = *reinterpret_cast<List**>(base + mapEntitiesRva);
-		auto* creatures = *reinterpret_cast<List**>(base + mapCreaturesRva);
-		std::unordered_set<std::uint32_t> partyUids;
-		if ( creatures )
-		{
-			for ( Node* node = creatures->first; node; node = node->next )
-			{
-				auto* entity = static_cast<std::uint8_t*>(node->element);
-				if ( !entity )
-				{
-					continue;
-				}
-				const auto action = behavior(entity);
-				if ( action == reinterpret_cast<std::uintptr_t>(base + actPlayerRva)
-					|| (action == reinterpret_cast<std::uintptr_t>(base + actMonsterRva)
-						&& skill(entity, skillMonsterAllyIndex) >= 0) )
-				{
-					partyUids.insert(uid(entity));
-				}
-			}
-		}
-		revealCandidates = collectRevealCandidates(entities, partyUids);
+		revealCandidates = collectRevealCandidates(entities);
 		revealForViewer(viewer).refresh(revealCandidates);
 	}
 
@@ -1627,7 +1556,7 @@ namespace
 		{
 			resetRevealFloor();
 			auto* loadedEntities = *reinterpret_cast<List**>(base + mapEntitiesRva);
-			collectRevealCandidates(loadedEntities, {});
+			collectRevealCandidates(loadedEntities);
 		}
 		return result;
 	}
@@ -1746,203 +1675,6 @@ namespace
 			skill(mutation->entity, skillShowOnMap) = mutation->showOnMap;
 		}
 		mutations.clear();
-	}
-
-	std::uint32_t itemInventoryKey(std::uint8_t* entity)
-	{
-		return quality::minimap::items::stackFingerprint({
-			static_cast<std::uint32_t>(skill(entity, 10)),
-			static_cast<std::uint32_t>(skill(entity, 11)),
-			static_cast<std::uint32_t>(skill(entity, 12)),
-			static_cast<std::uint32_t>(skill(entity, 14)),
-			static_cast<std::uint32_t>(skill(entity, 15)),
-		});
-	}
-
-	void observePartyItems(List* entities,
-		const std::unordered_set<std::uint32_t>& partyUids,
-		const std::vector<std::uint8_t*>& partyEntities)
-	{
-		if ( !entities )
-		{
-			return;
-		}
-		const bool authoritative = quality::minimap::items::locallyAuthoritative(
-			multiplayerMode());
-		struct ItemObservation
-		{
-			std::uint32_t uid;
-			std::uint32_t inventoryKey;
-			int x;
-			int y;
-			bool partyOwned;
-		};
-		std::vector<ItemObservation> observations;
-		std::unordered_set<std::uint32_t> liveItems;
-		const int lootBagIndex = *reinterpret_cast<int*>(
-			base + lootBagSpriteIndexRva);
-		const int lootBagVariations = *reinterpret_cast<int*>(
-			base + lootBagSpriteVariationsRva);
-		for ( Node* node = entities->first; node; node = node->next )
-		{
-			auto* entity = static_cast<std::uint8_t*>(node->element);
-			if ( !entity )
-			{
-				continue;
-			}
-			const int sprite = field<std::int32_t>(entity, entitySprite);
-			const bool lootBag = sprite >= lootBagIndex
-				&& sprite < lootBagIndex + lootBagVariations;
-			if ( !quality::minimap::items::eligibleGroundItem(
-				behavior(entity) == reinterpret_cast<std::uintptr_t>(base + actItemRva),
-				skill(entity, skillItemContainer) != 0, lootBag) )
-			{
-				continue;
-			}
-			const auto entityUid = uid(entity);
-			const auto inventoryKey = itemInventoryKey(entity);
-			const int tileX = static_cast<int>(std::floor(
-				field<double>(entity, entityX) / 16.0));
-			const int tileY = static_cast<int>(std::floor(
-				field<double>(entity, entityY) / 16.0));
-			liveItems.insert(entityUid);
-			const auto originalOwner = static_cast<std::uint32_t>(
-				skill(entity, skillItemOriginalOwner));
-			const auto parent = field<std::uint32_t>(entity, entityParent);
-			const bool partyDropped = partyUids.count(originalOwner) != 0
-				|| partyUids.count(parent) != 0;
-			observations.push_back({entityUid, inventoryKey, tileX, tileY,
-				partyDropped});
-			const auto* existing = partyItemState.find(entityUid);
-			if ( existing )
-			{
-				partyItemState.observe(entityUid, inventoryKey, tileX, tileY,
-					existing->partyDropped);
-			}
-			else if ( !partyDropped )
-			{
-				partyItemState.observe(entityUid, inventoryKey, tileX, tileY, false);
-			}
-		}
-
-		std::unordered_set<std::uint32_t> reboundOldItems;
-		std::unordered_set<std::uint32_t> reboundNewItems;
-		for ( const auto oldUid : seenWorldItems )
-		{
-			if ( liveItems.count(oldUid) || !anyRevealContains(oldUid) )
-			{
-				continue;
-			}
-			const auto* oldRecord = partyItemState.find(oldUid);
-			if ( !oldRecord || oldRecord->partyDropped )
-			{
-				continue;
-			}
-			for ( const auto& observation : observations )
-			{
-				if ( !observation.partyOwned
-					|| partyItemState.find(observation.uid)
-					|| reboundNewItems.count(observation.uid)
-					|| observation.inventoryKey
-						!= oldRecord->marker.inventoryKey )
-				{
-					continue;
-				}
-				const int dx = observation.x - oldRecord->marker.x;
-				const int dy = observation.y - oldRecord->marker.y;
-				if ( dx * dx + dy * dy > 25 )
-				{
-					continue;
-				}
-				if ( partyItemState.rebindOrdinary(oldUid, observation.uid,
-					observation.inventoryKey, observation.x, observation.y) )
-				{
-					rebindRevealAll(oldUid, observation.uid,
-						observation.x, observation.y);
-					reboundOldItems.insert(oldUid);
-					reboundNewItems.insert(observation.uid);
-				}
-				break;
-			}
-		}
-
-		if ( authoritative )
-		{
-			for ( const auto& observation : observations )
-			{
-				if ( !observation.partyOwned
-					|| reboundNewItems.count(observation.uid)
-					|| partyItemState.find(observation.uid) )
-				{
-					continue;
-				}
-				partyItemState.observe(observation.uid, observation.inventoryKey,
-					observation.x, observation.y, true);
-				const auto* record = partyItemState.find(observation.uid);
-				if ( record )
-				{
-					broadcastItem(PacketKind::ItemDropped, record->marker);
-				}
-			}
-			for ( const auto oldUid : seenWorldItems )
-			{
-				if ( liveItems.count(oldUid) || reboundOldItems.count(oldUid) )
-				{
-					continue;
-				}
-				const auto* found = partyItemState.find(oldUid);
-				if ( !found )
-				{
-					continue;
-				}
-				const auto record = *found;
-				bool partyPickup = false;
-				for ( const auto* party : partyEntities )
-				{
-					const double dx = field<double>(party, entityX) / 16.0
-						- (record.marker.x + .5);
-					const double dy = field<double>(party, entityY) / 16.0
-						- (record.marker.y + .5);
-					if ( dx * dx + dy * dy <= 6.25 )
-					{
-						partyPickup = true;
-						break;
-					}
-				}
-				if ( partyPickup )
-				{
-					partyItemState.pickUp(oldUid, record.marker.inventoryKey);
-					if ( record.partyDropped )
-					{
-						broadcastItem(PacketKind::ItemPickedUp, record.marker);
-					}
-				}
-				else
-				{
-					if ( record.partyDropped )
-					{
-						broadcastItem(PacketKind::ItemRemoved, record.marker);
-					}
-					partyItemState.remove(oldUid);
-				}
-			}
-		}
-		else
-		{
-			for ( const auto oldUid : seenWorldItems )
-			{
-				if ( liveItems.count(oldUid) || reboundOldItems.count(oldUid) )
-				{
-					continue;
-				}
-				const auto* record = partyItemState.find(oldUid);
-				if ( record && !record->partyDropped )
-				{
-					partyItemState.remove(oldUid);
-				}
-			}
-		}
-		seenWorldItems = std::move(liveItems);
 	}
 
 	bool viewerPose(const int viewer, double& x, double& y, double& yaw,
@@ -2096,26 +1828,23 @@ namespace
 		{
 			if ( hostSightingCapable )
 			{
-				sendSightingSnapshot(*reinterpret_cast<IpAddress*>(base + netServerRva),
-					localGeneration, *reinterpret_cast<int*>(base + clientnumRva),
+				sendSightingSnapshot(0, localGeneration,
+					*reinterpret_cast<int*>(base + clientnumRva),
 					partySightingSequence, combined);
 			}
 			return;
 		}
 		if ( multiplayerMode() != 1 ) { return; }
-		auto* clients = *reinterpret_cast<IpAddress**>(base + netClientsPointerRva);
 		const auto* disconnected = base + clientDisconnectedRva;
 		for ( int player = 1; player < 4; ++player )
 		{
 			if ( disconnected[player] ) { localSightings.clearPlayer(player); }
-			if ( !clients || disconnected[player] ) { continue; }
-			const IpAddress destination = clients[player - 1];
-			const auto key = addressKey(destination);
-			const auto generation = clientGenerations.find(key);
-			if ( generation != clientGenerations.end()
-				&& sightingCapableClients.count(key) != 0 )
+			if ( disconnected[player] ) { continue; }
+			const auto generation = clientGenerations[player];
+			if ( generation != 0
+				&& sightingCapableClients.count(player) != 0 )
 			{
-				sendSightingSnapshot(destination, generation->second, 0xFF,
+				sendSightingSnapshot(player, generation, 0xFF,
 					partySightingSequence, localSightings.combined());
 			}
 		}
@@ -2124,9 +1853,8 @@ namespace
 	void publishExitCountRefreshes()
 	{
 		if ( multiplayerMode() != 1 ) { return; }
-		auto* clients = *reinterpret_cast<IpAddress**>(base + netClientsPointerRva);
 		const auto* disconnected = base + clientDisconnectedRva;
-		for ( int player = 1; clients && player < 4; ++player )
+		for ( int player = 1; player < 4; ++player )
 		{
 			if ( disconnected[player] || !exitRevealActivated[player] ) { continue; }
 			const auto counts = exitCreatureCountsForViewer(player);
@@ -2135,12 +1863,11 @@ namespace
 			{
 				continue;
 			}
-			const IpAddress destination = clients[player - 1];
-			const auto generation = clientGenerations.find(addressKey(destination));
-			if ( generation == clientGenerations.end() ) { continue; }
+			const auto generation = clientGenerations[player];
+			if ( generation == 0 ) { continue; }
 			publishedExitCounts[player] = counts;
 			publishedExitCountsValid[player] = true;
-			queueReliable(PacketKind::Refresh, destination, generation->second,
+			queueReliable(PacketKind::Refresh, player, generation,
 				exitCountsPayload(player));
 		}
 	}
@@ -2156,6 +1883,18 @@ namespace
 			return;
 		}
 		const std::uint32_t ticks = *reinterpret_cast<std::uint32_t*>(base + ticksRva);
+		if ( multiplayerMode() == 1 )
+		{
+			const auto* disconnected = base + clientDisconnectedRva;
+			for ( int player = 1; player < 4; ++player )
+			{
+				if ( disconnected[player] )
+				{
+					clientGenerations[player] = 0;
+					sightingCapableClients.erase(player);
+				}
+			}
+		}
 		const auto entityList = reinterpret_cast<std::uintptr_t>(entities);
 		if ( entityList != lastEntityList || ticks < lastTicks )
 		{
@@ -2166,7 +1905,6 @@ namespace
 
 		std::unordered_set<std::uint32_t> partyUids;
 		std::unordered_set<std::uint32_t> shadowTaggedUids;
-		std::vector<std::uint8_t*> partyEntities;
 		for ( Node* node = creatures->first; node; node = node->next )
 		{
 			auto* entity = static_cast<std::uint8_t*>(node->element);
@@ -2178,7 +1916,6 @@ namespace
 			if ( action == reinterpret_cast<std::uintptr_t>(base + actPlayerRva) )
 			{
 				partyUids.insert(uid(entity));
-				partyEntities.push_back(entity);
 				const auto tagged = static_cast<std::uint32_t>(
 					skill(entity, skillShadowTaggedUid));
 				if ( tagged )
@@ -2190,12 +1927,19 @@ namespace
 				&& skill(entity, skillMonsterAllyIndex) >= 0 )
 			{
 				partyUids.insert(uid(entity));
-				partyEntities.push_back(entity);
 			}
 		}
-		observePartyItems(entities, partyUids, partyEntities);
 		observeChests(entities);
-		revealCandidates = collectRevealCandidates(entities, partyUids);
+		revealCandidates = collectRevealCandidates(entities);
+		immediateBlueItems.clear();
+		for ( const auto& candidate : revealCandidates )
+		{
+			if ( quality::minimap::reveal::immediateBlue(candidate) )
+			{
+				immediateBlueItems.push_back({candidate.uid, candidate.x,
+					candidate.y, quality::minimap::reveal::Kind::Green});
+			}
+		}
 		for ( auto& state : revealStates ) { state.observeLive(revealCandidates); }
 		flushPendingPackets();
 		updateFinalReveal(currentViewer);
@@ -2243,11 +1987,17 @@ namespace
 				customPortal,
 				action == reinterpret_cast<std::uintptr_t>(base + actWorkbenchRva),
 				action == reinterpret_cast<std::uintptr_t>(base + actCauldronRva));
-			if ( partyItemState.isPartyDropped(uid(entity)) )
+			if ( action == reinterpret_cast<std::uintptr_t>(base + actItemRva)
+				&& skill(entity, skillItemContainer) == 0 )
 			{
-				suppressVanilla(entity, false);
+				const int lootBagIndex = *reinterpret_cast<int*>(
+					base + lootBagSpriteIndexRva);
+				const int lootBagVariations = *reinterpret_cast<int*>(
+					base + lootBagSpriteVariationsRva);
+				const bool lootBag = sprite >= lootBagIndex
+					&& sprite < lootBagIndex + lootBagVariations;
+				if ( !lootBag ) { suppressVanilla(entity, false); }
 			}
-
 			if ( appearance == quality::minimap::MarkerAppearance::Exit )
 			{
 				if ( revealForViewer(currentViewer).contains(uid(entity))
@@ -2298,10 +2048,25 @@ namespace
 
 		for ( const auto& marker : revealForViewer(currentViewer).markers() )
 		{
-			if ( marker.kind == quality::minimap::reveal::Kind::Unused )
+			if ( marker.kind == quality::minimap::reveal::Kind::Green )
 			{
-				visuals.push_back({VisualKind::Unused, marker.x + .5,
+				visuals.push_back({VisualKind::Green, marker.x + .5,
 					marker.y + .5, 0.0, -1, false});
+			}
+			else if ( marker.kind
+				== quality::minimap::reveal::Kind::ShinyYellow )
+			{
+				visuals.push_back({VisualKind::ShinyYellow, marker.x + .5,
+					marker.y + .5, 0.0, -1, false});
+			}
+		}
+		if ( revealForViewer(currentViewer).active() )
+		{
+			for ( const auto& chest : chestState.markers(
+				quality::minimap::chests::Contents::HasUnidentified) )
+			{
+				visuals.push_back({VisualKind::Green, chest.x + .5,
+					chest.y + .5, 0.0, -1, false});
 			}
 		}
 
@@ -2685,14 +2450,15 @@ namespace
 			return;
 		}
 		glLineWidth(1.5f);
-		for ( const auto& item : partyItemState.markers() )
+		for ( const auto& item : immediateBlueItems )
 		{
 			const auto marker = transform(item.x + .5, item.y + .5, scope);
 			circle(marker.x, marker.y,
 				std::min(marker.unitX, marker.unitY) * .5f,
 				quality::minimap::interactedBlue, true);
 		}
-		for ( const auto& chest : chestState.markers() )
+		for ( const auto& chest : chestState.markers(
+			quality::minimap::chests::Contents::IdentifiedOnly) )
 		{
 			const auto marker = transform(chest.x + .5, chest.y + .5, scope);
 			circle(marker.x, marker.y,
@@ -2754,9 +2520,9 @@ namespace
 						{
 							const float angle = static_cast<float>(2.0*pi*index/32.0);
 							arc.emplace_back(marker.x
-								+ std::sin(angle)*marker.unitX*.31f*stationScale,
+								+ std::cos(angle)*marker.unitX*.31f*stationScale,
 								marker.y
-								+ std::cos(angle)*marker.unitY*.31f*stationScale);
+								+ std::sin(angle)*marker.unitY*.31f*stationScale);
 						}
 						line(arc, quality::minimap::color(0, 64, 64));
 					}
@@ -2771,9 +2537,19 @@ namespace
 					circle(marker.x, marker.y, radius,
 						quality::minimap::detectedPurple, true);
 					break;
-				case VisualKind::Unused:
+				case VisualKind::Green:
 					circle(marker.x, marker.y, radius,
 						quality::minimap::uninteractedGreen, true);
+					break;
+				case VisualKind::ShinyYellow:
+					circle(marker.x, marker.y, radius,
+						quality::minimap::shinyYellow, true);
+					line({{marker.x + radius*.18f, marker.y - radius*.82f},
+						{marker.x + radius*.18f, marker.y - radius*.28f}},
+						quality::minimap::color(255, 255, 255));
+					line({{marker.x - radius*.09f, marker.y - radius*.55f},
+						{marker.x + radius*.45f, marker.y - radius*.55f}},
+						quality::minimap::color(255, 255, 255));
 					break;
 				case VisualKind::Player:
 					drawArrow(marker, visual.yaw,
@@ -3122,6 +2898,7 @@ namespace
 				updateAllyFollowerFrameSignature)
 			|| !matches(getMonsterLocalizedNameRva,
 				getMonsterLocalizedNameSignature)
+			|| !matches(sendPacketRva, sendPacketSignature)
 			|| !matches(layout::getStatsRva, layout::getStatsSignature)
 			|| !matches(layout::monsterIsFriendlyForTooltipRva,
 				layout::monsterIsFriendlyForTooltipSignature)
@@ -3160,8 +2937,18 @@ namespace
 				return false;
 			}
 		}
-		if ( !*reinterpret_cast<UdpRecvFn*>(base + udpRecvIatRva)
-			|| !*reinterpret_cast<UdpSendFn*>(base + udpSendIatRva) )
+		for ( std::size_t index = 0; index < clientHandlePacketCallRvas.size();
+			++index )
+		{
+			if ( !matches(clientHandlePacketCallRvas[index],
+				clientHandlePacketCalls[index])
+				|| !matches(serverHandlePacketCallRvas[index],
+					serverHandlePacketCalls[index]) )
+			{
+				return false;
+			}
+		}
+		if ( !*reinterpret_cast<UdpSendFn*>(base + udpSendIatRva) )
 		{
 			return false;
 		}
@@ -3221,9 +3008,13 @@ namespace quality::minimap_runtime
 		monsterIsFriendlyForTooltip =
 			reinterpret_cast<MonsterIsFriendlyForTooltipFn>(
 				base + layout::monsterIsFriendlyForTooltipRva);
-		udpRecv = *reinterpret_cast<UdpRecvFn*>(base + udpRecvIatRva);
 		udpSend = *reinterpret_cast<UdpSendFn*>(base + udpSendIatRva);
-		relayPage = allocateNearModule(6 * relayStride);
+		sendPacket = reinterpret_cast<SendPacketFn>(base + sendPacketRva);
+		clientHandlePacket = reinterpret_cast<HandlePacketFn>(
+			base + clientHandlePacketRva);
+		serverHandlePacket = reinterpret_cast<HandlePacketFn>(
+			base + serverHandlePacketRva);
+		relayPage = allocateNearModule(8 * relayStride);
 		drawTrampoline = VirtualAlloc(nullptr, 64, MEM_COMMIT | MEM_RESERVE,
 			PAGE_EXECUTE_READWRITE);
 		loadMapTrampoline = VirtualAlloc(nullptr, 64, MEM_COMMIT | MEM_RESERVE,
@@ -3247,6 +3038,8 @@ namespace quality::minimap_runtime
 		auto* exitTooltipRelay = relay + 3 * relayStride;
 		auto* headstoneDialogueRelay = relay + 4 * relayStride;
 		auto* imageDrawRelay = relay + 5 * relayStride;
+		auto* clientHandlePacketRelay = relay + 6 * relayStride;
+		auto* serverHandlePacketRelay = relay + 7 * relayStride;
 		writeRelay(playerColorRelay, reinterpret_cast<void*>(&playerColorHook));
 		writeRelay(ghostTriangleRelay, reinterpret_cast<void*>(&ghostTriangleHook));
 		writeExitTooltipRelay(exitTooltipRelay,
@@ -3254,6 +3047,10 @@ namespace quality::minimap_runtime
 		writeRelay(headstoneDialogueRelay,
 			reinterpret_cast<void*>(&headstoneDialogueHook));
 		writeRelay(imageDrawRelay, reinterpret_cast<void*>(&imageDrawHook));
+		writeRelay(clientHandlePacketRelay,
+			reinterpret_cast<void*>(&clientHandlePacketHook));
+		writeRelay(serverHandlePacketRelay,
+			reinterpret_cast<void*>(&serverHandlePacketHook));
 		const auto pingStub = makePingStub();
 		if ( pingStub.empty() || pingStub.size() > relayStride )
 		{
@@ -3370,7 +3167,16 @@ namespace quality::minimap_runtime
 			addPatch(patches, ghostTriangleCallRvas[index], ghostTriangleCalls[index],
 				relativeCall(ghostTriangleCallRvas[index], ghostTriangleRelay));
 		}
-		addPointerPatch(patches, udpRecvIatRva, udpRecv, &udpRecvHook);
+		for ( std::size_t index = 0; index < clientHandlePacketCallRvas.size();
+			++index )
+		{
+			addPatch(patches, clientHandlePacketCallRvas[index],
+				clientHandlePacketCalls[index], relativeCall(
+					clientHandlePacketCallRvas[index], clientHandlePacketRelay));
+			addPatch(patches, serverHandlePacketCallRvas[index],
+				serverHandlePacketCalls[index], relativeCall(
+					serverHandlePacketCallRvas[index], serverHandlePacketRelay));
+		}
 		addPointerPatch(patches, udpSendIatRva, udpSend, &udpSendHook);
 		return true;
 	}

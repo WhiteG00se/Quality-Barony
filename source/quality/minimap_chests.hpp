@@ -13,13 +13,32 @@ namespace quality::minimap::chests
 		return chest && voidState == 0;
 	}
 
+	enum class Contents : std::uint8_t
+	{
+		Empty,
+		HasUnidentified,
+		IdentifiedOnly,
+	};
+
+	constexpr Contents classify(const int unidentifiedCount,
+		const int identifiedCount)
+	{
+		return unidentifiedCount > 0 ? Contents::HasUnidentified
+			: identifiedCount > 0 ? Contents::IdentifiedOnly : Contents::Empty;
+	}
+
+	constexpr bool validContentsValue(const std::uint32_t value)
+	{
+		return value <= static_cast<std::uint32_t>(Contents::IdentifiedOnly);
+	}
+
 	struct Observation
 	{
 		std::uint32_t uid = 0;
 		int x = 0;
 		int y = 0;
-		int itemCount = 0;
-		bool open = false;
+		int unidentifiedCount = 0;
+		int identifiedCount = 0;
 	};
 
 	struct Update
@@ -27,8 +46,7 @@ namespace quality::minimap::chests
 		std::uint32_t uid = 0;
 		int x = 0;
 		int y = 0;
-		bool interacted = false;
-		bool nonempty = false;
+		Contents contents = Contents::Empty;
 	};
 
 	using Marker = Update;
@@ -36,10 +54,7 @@ namespace quality::minimap::chests
 	class State
 	{
 	public:
-		void reset()
-		{
-			records_.clear();
-		}
+		void reset() { records_.clear(); }
 
 		std::vector<Update> observeAuthoritative(
 			const std::vector<Observation>& observations)
@@ -48,45 +63,29 @@ namespace quality::minimap::chests
 			std::unordered_set<std::uint32_t> live;
 			for ( const auto& observation : observations )
 			{
-				if ( observation.uid == 0 )
-				{
-					continue;
-				}
+				if ( observation.uid == 0 ) { continue; }
 				live.insert(observation.uid);
+				const Update update {observation.uid, observation.x, observation.y,
+					classify(observation.unidentifiedCount,
+						observation.identifiedCount)};
 				auto found = records_.find(observation.uid);
-				if ( found == records_.end() )
+				if ( found == records_.end() || found->second.contents != update.contents )
 				{
-					records_[observation.uid] = {
-						observation.x, observation.y, observation.itemCount,
-						observation.open, false, false,
-					};
-					continue;
+					updates.push_back(update);
 				}
-
-				auto& record = found->second;
-				const bool countChanged = observation.itemCount != record.itemCount;
-				const bool transfer = countChanged && (observation.open || record.open);
-				const bool wasInteracted = record.interacted;
-				const bool wasNonempty = record.nonempty;
-				if ( transfer )
-				{
-					record.interacted = true;
-				}
-				if ( record.interacted )
-				{
-					record.nonempty = observation.itemCount > 0;
-				}
-				record.x = observation.x;
-				record.y = observation.y;
-				record.itemCount = observation.itemCount;
-				record.open = observation.open;
-				if ( record.interacted
-					&& (!wasInteracted || record.nonempty != wasNonempty) )
-				{
-					updates.push_back(makeUpdate(observation.uid, record));
-				}
+				records_[observation.uid] = update;
 			}
-			prune(live);
+			for ( auto record = records_.begin(); record != records_.end(); )
+			{
+				if ( live.count(record->first) ) { ++record; continue; }
+				if ( record->second.contents != Contents::Empty )
+				{
+					updates.push_back({record->first, record->second.x,
+						record->second.y, Contents::Empty});
+				}
+				record = records_.erase(record);
+			}
+			sort(updates);
 			return updates;
 		}
 
@@ -95,10 +94,7 @@ namespace quality::minimap::chests
 			std::unordered_set<std::uint32_t> live;
 			for ( const auto& observation : observations )
 			{
-				if ( observation.uid == 0 )
-				{
-					continue;
-				}
+				if ( observation.uid == 0 ) { continue; }
 				live.insert(observation.uid);
 				const auto found = records_.find(observation.uid);
 				if ( found != records_.end() )
@@ -112,61 +108,42 @@ namespace quality::minimap::chests
 
 		void apply(const Update& update)
 		{
-			if ( update.uid == 0 || !update.interacted )
-			{
-				return;
-			}
-			auto& record = records_[update.uid];
-			record.x = update.x;
-			record.y = update.y;
-			record.interacted = true;
-			record.nonempty = update.nonempty;
+			if ( update.uid != 0 ) { records_[update.uid] = update; }
 		}
 
-		std::vector<Update> updates() const
+		std::vector<Update> snapshots() const
 		{
 			std::vector<Update> result;
 			for ( const auto& entry : records_ )
 			{
-				if ( entry.second.interacted )
+				if ( entry.second.contents != Contents::Empty )
 				{
-					result.push_back(makeUpdate(entry.first, entry.second));
+					result.push_back(entry.second);
 				}
 			}
 			sort(result);
 			return result;
 		}
 
-		std::vector<Marker> markers() const
+		std::vector<Marker> markers(const Contents contents) const
 		{
-			auto result = updates();
+			auto result = snapshots();
 			result.erase(std::remove_if(result.begin(), result.end(),
-				[](const Marker& marker) { return !marker.nonempty; }), result.end());
+				[contents](const Marker& marker)
+				{
+					return marker.contents != contents;
+				}), result.end());
 			return result;
 		}
 
-		bool interacted(const std::uint32_t uid) const
+		Contents contents(const std::uint32_t uid) const
 		{
 			const auto found = records_.find(uid);
-			return found != records_.end() && found->second.interacted;
+			return found == records_.end() ? Contents::Empty
+				: found->second.contents;
 		}
 
 	private:
-		struct Record
-		{
-			int x = 0;
-			int y = 0;
-			int itemCount = 0;
-			bool open = false;
-			bool interacted = false;
-			bool nonempty = false;
-		};
-
-		static Update makeUpdate(const std::uint32_t uid, const Record& record)
-		{
-			return {uid, record.x, record.y, record.interacted, record.nonempty};
-		}
-
 		static void sort(std::vector<Update>& updates)
 		{
 			std::sort(updates.begin(), updates.end(), [](const Update& left,
@@ -177,17 +154,11 @@ namespace quality::minimap::chests
 		{
 			for ( auto record = records_.begin(); record != records_.end(); )
 			{
-				if ( !live.count(record->first) )
-				{
-					record = records_.erase(record);
-				}
-				else
-				{
-					++record;
-				}
+				if ( !live.count(record->first) ) { record = records_.erase(record); }
+				else { ++record; }
 			}
 		}
 
-		std::unordered_map<std::uint32_t, Record> records_;
+		std::unordered_map<std::uint32_t, Update> records_;
 	};
 }

@@ -30,11 +30,20 @@ namespace quality::minimap::creatures
 
 	constexpr bool ordinarySightingVisible(const Disposition disposition,
 		const bool invisible, const bool invisibleDither,
-		const bool insideCone, const bool clearLineOfSight)
+		const bool cameraVisible, const bool illuminated,
+		const bool telepathVisible, const bool clearLineOfSight)
 	{
 		return disposition == Disposition::Hostile
 			&& !(invisible && !invisibleDither)
-			&& insideCone && clearLineOfSight;
+			&& (telepathVisible || (cameraVisible && illuminated))
+			&& clearLineOfSight;
+	}
+
+	constexpr bool ghostWithinExitNeighborhood(const int ghostX,
+		const int ghostY, const int exitX, const int exitY)
+	{
+		return std::abs(ghostX - exitX) <= 1
+			&& std::abs(ghostY - exitY) <= 1;
 	}
 
 	constexpr bool inForwardHalfPlane(const double originX,

@@ -77,6 +77,7 @@ namespace
 	constexpr std::uintptr_t mapHeightRva = 0x010539B4;
 	constexpr std::uintptr_t mapEntitiesRva = 0x01053A48;
 	constexpr std::uintptr_t mapCreaturesRva = 0x01053A50;
+	constexpr std::uintptr_t lightmapsRva = 0x01053C60;
 	constexpr std::uintptr_t ticksRva = 0x010533E4;
 	constexpr std::uintptr_t virtualScreenXPointerRva = 0x00BFEC60;
 	constexpr std::uintptr_t virtualScreenYPointerRva = 0x00BFEC68;
@@ -122,11 +123,13 @@ namespace
 	constexpr std::size_t cameraX = 0x00;
 	constexpr std::size_t cameraY = 0x08;
 	constexpr std::size_t cameraYaw = 0x18;
+	constexpr std::size_t cameraVismap = 0x70;
 	constexpr std::size_t mapTiles = 0x90;
 	constexpr std::size_t skillPlayerIndex = 2;
 	constexpr std::size_t skillMonsterAllyIndex = 42;
 	constexpr std::size_t skillShadowTaggedUid = 54;
 	constexpr std::size_t skillShowOnMap = 59;
+	constexpr std::size_t skillTelepathRender = 41;
 	constexpr std::size_t skillItemContainer = 29;
 	constexpr std::size_t skillItemType = 10;
 	constexpr std::size_t skillItemIdentified = 15;
@@ -280,6 +283,14 @@ namespace
 		std::uint32_t size;
 	};
 	struct List { Node* first; Node* last; };
+	struct LightValue { float red; float green; float blue; float shade; };
+	struct MsvcVectorStorage
+	{
+		LightValue* first;
+		LightValue* last;
+		LightValue* capacity;
+	};
+	static_assert(sizeof(MsvcVectorStorage) == 24);
 	struct MsvcString
 	{
 		union
@@ -427,6 +438,10 @@ namespace
 		publishedExitCounts {};
 	std::array<bool, quality::minimap::creatures::maximumPlayers>
 		publishedExitCountsValid {};
+	std::array<std::uint32_t, quality::minimap::creatures::maximumPlayers>
+		lastExitCountPublishTick {};
+	std::array<bool, quality::minimap::creatures::maximumPlayers>
+		ghostNearExit {};
 	quality::minimap::chests::State chestState;
 	std::vector<quality::minimap::reveal::Marker> immediateBlueItems;
 	bool inMinimapDraw = false;
@@ -515,10 +530,11 @@ namespace
 
 	enum class PacketKind : std::uint8_t
 	{
-		Ready = 1,
+		Hello = 1,
 		Request = 2,
-		Refresh = 3,
+		Counts = 3,
 		Acknowledgement = 4,
+		Welcome = 5,
 		ChestState = 8,
 	};
 	enum class RosterPacketKind : std::uint8_t
@@ -559,6 +575,8 @@ namespace
 	std::unordered_set<std::uint64_t> appliedPackets;
 	std::unordered_set<int> sightingCapableClients;
 	bool hostSightingCapable = false;
+	bool clientWelcomed = false;
+	std::uint32_t lastHelloTick = 0;
 	std::uint32_t partySightingSequence = 1;
 	std::uint32_t lastSightingPublishTick = 0;
 	struct SightingAssembly
@@ -570,7 +588,10 @@ namespace
 	};
 	std::array<SightingAssembly, quality::minimap::creatures::maximumPlayers>
 		remoteSightingAssemblies;
+	std::array<std::uint32_t, quality::minimap::creatures::maximumPlayers>
+		lastRemoteSightingTick {};
 	SightingAssembly partySightingAssembly;
+	std::uint32_t lastPartySightingTick = 0;
 	bool flushingPackets = false;
 
 	void writeU32(std::uint8_t* output, const std::size_t offset,
@@ -801,6 +822,19 @@ namespace
 		pendingPackets[sequence] = pending;
 		sendBytes(pending.bytes, targetPlayer);
 		pendingPackets[sequence].lastSentTick = pending.createdTick;
+	}
+
+	void sendHello(const bool force = false)
+	{
+		if ( multiplayerMode() != layout::multiplayerClient ) { return; }
+		const auto now = *reinterpret_cast<std::uint32_t*>(base + ticksRva);
+		const std::uint32_t interval = clientWelcomed ? 250U : 60U;
+		if ( !force && now - lastHelloTick < interval ) { return; }
+		std::uint32_t sequence = networkSequence++;
+		if ( sequence == 0 ) { sequence = networkSequence++; }
+		sendBytes(makePacket(PacketKind::Hello, sequence, 0,
+			localGeneration, {sightingCapability}), 0);
+		lastHelloTick = now;
 	}
 
 	void sendAcknowledgement(const int targetPlayer,
@@ -1043,8 +1077,11 @@ namespace
 		refreshRevealSnapshot(viewer);
 		if ( multiplayerMode() == 2 )
 		{
-			queueReliable(PacketKind::Request,
-				0, localGeneration);
+			sendHello(!clientWelcomed);
+			if ( clientWelcomed )
+			{
+				queueReliable(PacketKind::Request, 0, localGeneration);
+			}
 		}
 	}
 
@@ -1060,12 +1097,18 @@ namespace
 		synchronizedExitCountsValid.fill(false);
 		exitRevealActivated.fill(false);
 		publishedExitCountsValid.fill(false);
+		lastExitCountPublishTick.fill(0);
+		ghostNearExit.fill(false);
 		sightingCapableClients.clear();
 		hostSightingCapable = false;
+		clientWelcomed = false;
+		lastHelloTick = 0;
 		partySightingSequence = 1;
 		lastSightingPublishTick = 0;
 		for ( auto& assembly : remoteSightingAssemblies ) { assembly = {}; }
+		lastRemoteSightingTick.fill(0);
 		partySightingAssembly = {};
+		lastPartySightingTick = 0;
 		chestState.reset();
 		immediateBlueItems.clear();
 		sharedFollowerRoster.reset();
@@ -1083,9 +1126,7 @@ namespace
 		}
 		if ( multiplayerMode() == 2 )
 		{
-			queueReliable(PacketKind::Ready,
-				0, localGeneration,
-				{sightingCapability});
+			sendHello(true);
 		}
 	}
 
@@ -1095,7 +1136,7 @@ namespace
 			&& std::memcmp(packet->data, "QMRF", 4) == 0
 			&& quality::minimap::network::compatible(
 				quality::minimap::network::Stream::State, packet->data[4])
-			&& packet->data[5] >= static_cast<std::uint8_t>(PacketKind::Ready)
+			&& packet->data[5] >= static_cast<std::uint8_t>(PacketKind::Hello)
 			&& packet->data[5] <= static_cast<std::uint8_t>(PacketKind::ChestState);
 	}
 
@@ -1153,9 +1194,12 @@ namespace
 				packet->data, complete) )
 			{
 				localSightings.replace(player, readU32(packet->data, 8), complete);
+				lastRemoteSightingTick[player] =
+					*reinterpret_cast<std::uint32_t*>(base + ticksRva);
 			}
 		}
 		else if ( multiplayerMode() == layout::multiplayerClient
+			&& clientWelcomed
 			&& quality::minimap::creatures::acceptSightingSnapshot(true,
 				packet->data[15] == 0,
 				matchingFloor, readU32(packet->data, 24) == localGeneration,
@@ -1167,6 +1211,8 @@ namespace
 			{
 				receivedPartySightings.clear();
 				receivedPartySightings.insert(complete.begin(), complete.end());
+				lastPartySightingTick =
+					*reinterpret_cast<std::uint32_t*>(base + ticksRva);
 			}
 		}
 	}
@@ -1174,6 +1220,13 @@ namespace
 	void processRosterPacket(const UdpPacket* packet)
 	{
 		if ( !floorMatches(packet->data) ) { return; }
+		if ( multiplayerMode() == layout::multiplayerClient
+			&& !clientWelcomed )
+		{
+			// Leave the packet unacknowledged so the reliable sender retries it
+			// after Welcome establishes this floor's session.
+			return;
+		}
 		const int sender = packet->data[15];
 		if ( !quality::minimap::network::validSender(multiplayerMode(), sender) )
 		{
@@ -1231,11 +1284,28 @@ namespace
 			}
 			return;
 		}
-		if ( !floorMatches(packet->data) )
+		const auto sequence = readU32(packet->data, 8);
+		const auto generation = readU32(packet->data, 24);
+		const bool hostHello = multiplayerMode() == 1
+			&& kind == PacketKind::Hello;
+		const bool clientWelcome = multiplayerMode() == layout::multiplayerClient
+			&& kind == PacketKind::Welcome;
+		if ( clientWelcome && (!floorMatches(packet->data)
+			|| generation != localGeneration) )
 		{
 			return;
 		}
-		const auto sequence = readU32(packet->data, 8);
+		if ( !hostHello && !clientWelcome && !floorMatches(packet->data) )
+		{
+			return;
+		}
+		if ( multiplayerMode() == layout::multiplayerClient
+			&& !clientWelcomed && !clientWelcome )
+		{
+			// Counts and chest snapshots can race ahead of Welcome. Do not
+			// acknowledge them until the session is established so they retry.
+			return;
+		}
 		sendAcknowledgement(sender, sequence);
 		const auto delivery = quality::minimap::network::deliveryKey(sender,
 			sequence);
@@ -1243,9 +1313,8 @@ namespace
 		{
 			return;
 		}
-		const auto generation = readU32(packet->data, 24);
 		if ( multiplayerMode() == 1
-			&& (kind == PacketKind::Ready || kind == PacketKind::Request) )
+			&& (kind == PacketKind::Hello || kind == PacketKind::Request) )
 		{
 			const int requestingPlayer = sender;
 			const auto* disconnected = base + clientDisconnectedRva;
@@ -1255,16 +1324,21 @@ namespace
 				return;
 			}
 			auto& accepted = clientGenerations[requestingPlayer];
-			if ( kind == PacketKind::Ready )
+			if ( kind == PacketKind::Hello )
 			{
-				// A newly ready player slot replaces any previous session generation.
+				// Hello deliberately is not floor-gated. The Welcome response carries
+				// the host's current floor identity, so either loading order converges.
 				accepted = generation;
-				if ( readU32(packet->data, 32) == sightingCapability )
+				const bool sightingCapable = readU32(packet->data, 32)
+					== sightingCapability;
+				if ( sightingCapable )
 				{
 					sightingCapableClients.insert(requestingPlayer);
-					sendSightingSnapshot(requestingPlayer, accepted, 0xFF,
-						partySightingSequence, localSightings.combined());
 				}
+				else { sightingCapableClients.erase(requestingPlayer); }
+				queueReliable(PacketKind::Welcome, requestingPlayer, accepted,
+					{sightingCapable ? sightingCapability : 0U, 0,
+						static_cast<std::uint32_t>(requestingPlayer)});
 				for ( const auto& update : chestState.snapshots() )
 				{
 					queueReliable(PacketKind::ChestState, requestingPlayer,
@@ -1275,33 +1349,57 @@ namespace
 					queueRosterReliable(RosterPacketKind::Upsert, requestingPlayer,
 						accepted, follower.second);
 				}
+				queueReliable(PacketKind::Counts, requestingPlayer, accepted,
+					exitCountsPayload(requestingPlayer));
+				publishedExitCounts[requestingPlayer] =
+					exitCreatureCountsForViewer(requestingPlayer);
+				publishedExitCountsValid[requestingPlayer] = true;
+				lastExitCountPublishTick[requestingPlayer] =
+					*reinterpret_cast<std::uint32_t*>(base + ticksRva);
+				if ( sightingCapable )
+				{
+					sendSightingSnapshot(requestingPlayer, accepted, 0xFF,
+						partySightingSequence, localSightings.combined());
+				}
 			}
 			else if ( quality::minimap::reveal::acceptHostRequest(true, true,
 				generation, accepted) )
 			{
 				exitRevealActivated[requestingPlayer] = true;
 				publishedExitCountsValid[requestingPlayer] = false;
-				queueReliable(PacketKind::Refresh, requestingPlayer, accepted,
+				queueReliable(PacketKind::Counts, requestingPlayer, accepted,
 					exitCountsPayload(requestingPlayer));
 			}
 		}
 		else if ( multiplayerMode() == 2
-			&& (kind == PacketKind::Refresh || kind == PacketKind::ChestState)
+			&& kind == PacketKind::Welcome )
+		{
+			const int target = static_cast<int>(readU32(packet->data, 40));
+			if ( target != localPlayerSlot() ) { return; }
+			clientWelcomed = true;
+			hostSightingCapable = readU32(packet->data, 32)
+				== sightingCapability;
+			const int viewer = localPlayerSlot();
+			if ( validViewer(viewer) && exitRevealActivated[viewer] )
+			{
+				queueReliable(PacketKind::Request, 0, localGeneration);
+			}
+		}
+		else if ( multiplayerMode() == 2 && clientWelcomed
+			&& (kind == PacketKind::Counts || kind == PacketKind::ChestState)
 			&& quality::minimap::reveal::acceptClientRefresh(sender == 0,
 				true, generation, localGeneration) )
 		{
-			if ( kind == PacketKind::Refresh )
+			if ( kind == PacketKind::Counts )
 			{
-				const int viewer = static_cast<int>(readU32(packet->data, 40));
-				if ( !validViewer(viewer) ) { return; }
+				const int target = static_cast<int>(readU32(packet->data, 40));
+				const int viewer = localPlayerSlot();
+				if ( !validViewer(viewer) || target != viewer ) { return; }
 				synchronizedExitCounts[viewer] = {
 					static_cast<int>(readU32(packet->data, 32)),
 					static_cast<int>(readU32(packet->data, 36)),
 				};
 				synchronizedExitCountsValid[viewer] = true;
-				exitRevealActivated[viewer] = true;
-				finalRevealStates[viewer].activate();
-				refreshRevealSnapshot(viewer);
 			}
 			else
 			{
@@ -1575,6 +1673,23 @@ namespace
 		{
 			return {hostiles, neutrals};
 		}
+		int classificationViewer = viewer;
+		auto** players = reinterpret_cast<std::uint8_t**>(base + layout::playersRva);
+		if ( !players[classificationViewer]
+			|| !field<std::uint8_t*>(players[classificationViewer], playerEntity) )
+		{
+			// Barony's tooltip helper returns early for ghosts. Use the first
+			// living party perspective while retaining authoritative live HP/state.
+			for ( int player = 0; player < 4; ++player )
+			{
+				if ( players[player]
+					&& field<std::uint8_t*>(players[player], playerEntity) )
+				{
+					classificationViewer = player;
+					break;
+				}
+			}
+		}
 		for ( Node* node = creatures->first; node; node = node->next )
 		{
 			auto* entity = static_cast<std::uint8_t*>(node->element);
@@ -1590,7 +1705,7 @@ namespace
 			const int allyIndex = skill(entity, skillMonsterAllyIndex);
 			const bool countable = monster && allyIndex < 0 && stats && hp > 0;
 			const bool friendly = countable
-				&& monsterIsFriendlyForTooltip(viewer, entity);
+				&& monsterIsFriendlyForTooltip(classificationViewer, entity);
 			switch ( quality::minimap::classifyExitCreature(monster, allyIndex,
 				stats != nullptr, hp, friendly) )
 			{
@@ -1618,7 +1733,9 @@ namespace
 		{
 			return {};
 		}
-		const int viewer = field<std::int32_t>(player, playerNumber);
+		const int uiViewer = field<std::int32_t>(player, playerNumber);
+		const int viewer = multiplayerMode() == layout::multiplayerClient
+			? localPlayerSlot() : uiViewer;
 		if ( multiplayerMode() == 2 && validViewer(viewer)
 			&& synchronizedExitCountsValid[viewer] )
 		{
@@ -1636,14 +1753,30 @@ namespace
 			auto* player = field<std::uint8_t*>(worldUi, worldUiPlayer);
 			if ( player ) { viewer = field<std::int32_t>(player, playerNumber); }
 		}
+		if ( multiplayerMode() == layout::multiplayerClient )
+		{
+			viewer = localPlayerSlot();
+		}
 		if ( validViewer(viewer) && revealForViewer(viewer).tooltipEdge(
 			*reinterpret_cast<std::uint32_t*>(base + ticksRva)) )
 		{
 			requestLocalRefresh(viewer);
 		}
-		const auto counts = exitCreatureCounts(worldUi);
-		quality::minimap::formatExitTooltip(exitTooltipText.data(),
-			exitTooltipText.size(), text, counts.first, counts.second);
+		const int countViewer = multiplayerMode() == layout::multiplayerClient
+			? localPlayerSlot() : viewer;
+		if ( multiplayerMode() == layout::multiplayerClient
+			&& (!validViewer(countViewer)
+				|| !synchronizedExitCountsValid[countViewer]) )
+		{
+			quality::minimap::formatExitTooltipSyncing(exitTooltipText.data(),
+				exitTooltipText.size(), text);
+		}
+		else
+		{
+			const auto counts = exitCreatureCounts(worldUi);
+			quality::minimap::formatExitTooltip(exitTooltipText.data(),
+				exitTooltipText.size(), text, counts.first, counts.second);
+		}
 		return exitTooltipText.data();
 	}
 
@@ -1739,6 +1872,51 @@ namespace
 		return true;
 	}
 
+	bool cameraTileVisible(const int viewer, const std::uint8_t* entity)
+	{
+		if ( !validViewer(viewer) || !entity ) { return false; }
+		auto** players = reinterpret_cast<std::uint8_t**>(base + layout::playersRva);
+		auto* player = players[viewer];
+		auto* camera = player ? field<std::uint8_t*>(player, playerCamera) : nullptr;
+		auto* vismap = camera ? field<bool*>(camera, cameraVismap) : nullptr;
+		const int width = *reinterpret_cast<int*>(base + mapWidthRva);
+		const int height = *reinterpret_cast<int*>(base + mapHeightRva);
+		const int x = static_cast<int>(std::floor(
+			field<double>(entity, entityX) / 16.0));
+		const int y = static_cast<int>(std::floor(
+			field<double>(entity, entityY) / 16.0));
+		return vismap && x >= 0 && y >= 0 && x < width && y < height
+			&& vismap[y + x * height];
+	}
+
+	bool entityTileIlluminated(const int viewer, const std::uint8_t* entity)
+	{
+		if ( !validViewer(viewer) || !entity ) { return false; }
+		const int width = *reinterpret_cast<int*>(base + mapWidthRva);
+		const int height = *reinterpret_cast<int*>(base + mapHeightRva);
+		const int x = static_cast<int>(std::floor(
+			field<double>(entity, entityX) / 16.0));
+		const int y = static_cast<int>(std::floor(
+			field<double>(entity, entityY) / 16.0));
+		if ( x < 0 || y < 0 || x >= width || y >= height ) { return false; }
+		auto* maps = reinterpret_cast<MsvcVectorStorage*>(base + lightmapsRva);
+		const auto& storage = maps[viewer + 1];
+		const std::size_t index = static_cast<std::size_t>(y + x * height);
+		if ( !storage.first || storage.last <= storage.first
+			|| index >= static_cast<std::size_t>(storage.last - storage.first) )
+		{
+			return false;
+		}
+		const auto& light = storage.first[index];
+		float level = (light.red + light.green + light.blue) / 3.f;
+		if ( light.shade > 0.f )
+		{
+			const float shade = std::clamp(light.shade, 0.f, 255.f) / 255.f;
+			level -= level * shade * .8f;
+		}
+		return level >= 1.f;
+	}
+
 	quality::minimap::ExitCreatureDisposition creatureDisposition(
 		const int viewer, std::uint8_t* entity)
 	{
@@ -1753,6 +1931,59 @@ namespace
 			&& monsterIsFriendlyForTooltip(viewer, entity);
 		return quality::minimap::classifyExitCreature(monster, allyIndex,
 			stats != nullptr, hp, friendly);
+	}
+
+	void updateGhostExitProximity(const int viewer, List* entities)
+	{
+		if ( !validViewer(viewer) || !entities ) { return; }
+		std::uint8_t* ghost = nullptr;
+		for ( Node* node = entities->first; node; node = node->next )
+		{
+			auto* entity = static_cast<std::uint8_t*>(node->element);
+			if ( !entity ) { continue; }
+			const int sprite = field<std::int32_t>(entity, entitySprite);
+			if ( sprite >= 1238 && sprite <= 1242
+				&& skill(entity, skillPlayerIndex) == viewer )
+			{
+				ghost = entity;
+				break;
+			}
+		}
+		bool nearby = false;
+		if ( ghost )
+		{
+			const int ghostX = static_cast<int>(std::floor(
+				field<double>(ghost, entityX) / 16.0));
+			const int ghostY = static_cast<int>(std::floor(
+				field<double>(ghost, entityY) / 16.0));
+			for ( Node* node = entities->first; node; node = node->next )
+			{
+				auto* entity = static_cast<std::uint8_t*>(node->element);
+				if ( !entity ) { continue; }
+				const int sprite = field<std::int32_t>(entity, entitySprite);
+				const bool customPortal = behavior(entity)
+					== reinterpret_cast<std::uintptr_t>(base + actCustomPortalRva);
+				if ( !quality::minimap::isExitSprite(sprite) && !customPortal )
+				{
+					continue;
+				}
+				const int exitX = static_cast<int>(std::floor(
+					field<double>(entity, entityX) / 16.0));
+				const int exitY = static_cast<int>(std::floor(
+					field<double>(entity, entityY) / 16.0));
+				if ( quality::minimap::creatures::ghostWithinExitNeighborhood(
+					ghostX, ghostY, exitX, exitY) )
+				{
+					nearby = true;
+					break;
+				}
+			}
+		}
+		if ( nearby && !ghostNearExit[viewer] )
+		{
+			requestLocalRefresh(viewer);
+		}
+		ghostNearExit[viewer] = nearby;
 	}
 
 	void updateFinalReveal(const int viewer)
@@ -1796,13 +2027,17 @@ namespace
 				}
 				const double targetX = field<double>(entity, entityX);
 				const double targetY = field<double>(entity, entityY);
+				const bool telepathVisible = skill(entity, skillTelepathRender) != 0
+					&& quality::minimap::creatures::inForwardHalfPlane(
+						originX, originY, yaw, targetX, targetY);
 				if ( quality::minimap::creatures::ordinarySightingVisible(
 					quality::minimap::creatures::Disposition::Hostile,
 					field<bool>(entity, entityFlags + 2),
 					field<bool>(entity, entityFlags + 16),
-					quality::minimap::creatures::inForwardHalfPlane(
-						originX, originY, yaw, targetX, targetY),
-					creatureLineOfSight(originX, originY, targetX, targetY,
+					cameraTileVisible(viewer, entity),
+					entityTileIlluminated(viewer, entity), telepathVisible,
+					telepathVisible || creatureLineOfSight(originX, originY,
+						targetX, targetY,
 						viewerEntity, entity, entities)) )
 				{
 					visible.push_back(uid(entity));
@@ -1826,7 +2061,7 @@ namespace
 		const auto combined = localSightings.combined();
 		if ( multiplayerMode() == layout::multiplayerClient )
 		{
-			if ( hostSightingCapable )
+			if ( clientWelcomed && hostSightingCapable )
 			{
 				sendSightingSnapshot(0, localGeneration,
 					*reinterpret_cast<int*>(base + clientnumRva),
@@ -1839,6 +2074,12 @@ namespace
 		for ( int player = 1; player < 4; ++player )
 		{
 			if ( disconnected[player] ) { localSightings.clearPlayer(player); }
+			if ( !disconnected[player] && lastRemoteSightingTick[player]
+				&& now - lastRemoteSightingTick[player] > 50U )
+			{
+				localSightings.clearPlayer(player);
+				lastRemoteSightingTick[player] = 0;
+			}
 			if ( disconnected[player] ) { continue; }
 			const auto generation = clientGenerations[player];
 			if ( generation != 0
@@ -1853,13 +2094,15 @@ namespace
 	void publishExitCountRefreshes()
 	{
 		if ( multiplayerMode() != 1 ) { return; }
+		const auto now = *reinterpret_cast<std::uint32_t*>(base + ticksRva);
 		const auto* disconnected = base + clientDisconnectedRva;
 		for ( int player = 1; player < 4; ++player )
 		{
-			if ( disconnected[player] || !exitRevealActivated[player] ) { continue; }
+			if ( disconnected[player] ) { continue; }
 			const auto counts = exitCreatureCountsForViewer(player);
 			if ( publishedExitCountsValid[player]
-				&& publishedExitCounts[player] == counts )
+				&& publishedExitCounts[player] == counts
+				&& now - lastExitCountPublishTick[player] < 250U )
 			{
 				continue;
 			}
@@ -1867,7 +2110,8 @@ namespace
 			if ( generation == 0 ) { continue; }
 			publishedExitCounts[player] = counts;
 			publishedExitCountsValid[player] = true;
-			queueReliable(PacketKind::Refresh, player, generation,
+			lastExitCountPublishTick[player] = now;
+			queueReliable(PacketKind::Counts, player, generation,
 				exitCountsPayload(player));
 		}
 	}
@@ -1883,6 +2127,14 @@ namespace
 			return;
 		}
 		const std::uint32_t ticks = *reinterpret_cast<std::uint32_t*>(base + ticksRva);
+		sendHello();
+		if ( multiplayerMode() == layout::multiplayerClient
+			&& lastPartySightingTick
+			&& ticks - lastPartySightingTick > 50U )
+		{
+			receivedPartySightings.clear();
+			lastPartySightingTick = 0;
+		}
 		if ( multiplayerMode() == 1 )
 		{
 			const auto* disconnected = base + clientDisconnectedRva;
@@ -1942,6 +2194,7 @@ namespace
 		}
 		for ( auto& state : revealStates ) { state.observeLive(revealCandidates); }
 		flushPendingPackets();
+		updateGhostExitProximity(currentViewer, entities);
 		updateFinalReveal(currentViewer);
 		const auto sharedSightings = updateCreatureSightings(currentViewer,
 			entities, creatures);
@@ -2347,6 +2600,72 @@ namespace
 		primitive(points, markerColor, mode);
 	}
 
+	std::array<std::uint8_t, 5> glyphRows(char character)
+	{
+		if ( character >= 'A' && character <= 'Z' ) { character += 'a' - 'A'; }
+		switch ( character )
+		{
+			case '0': return {7, 5, 5, 5, 7};
+			case '1': return {2, 6, 2, 2, 7};
+			case '2': return {7, 1, 7, 4, 7};
+			case '3': return {7, 1, 7, 1, 7};
+			case '4': return {5, 5, 7, 1, 1};
+			case '5': return {7, 4, 7, 1, 7};
+			case '6': return {7, 4, 7, 5, 7};
+			case '7': return {7, 1, 1, 1, 1};
+			case '8': return {7, 5, 7, 5, 7};
+			case '9': return {7, 5, 7, 1, 7};
+			case 'a': return {2, 5, 7, 5, 5};
+			case 'c': return {7, 4, 4, 4, 7};
+			case 'e': return {7, 4, 6, 4, 7};
+			case 'g': return {7, 4, 5, 5, 7};
+			case 'h': return {5, 5, 7, 5, 5};
+			case 'i': return {7, 2, 2, 2, 7};
+			case 'l': return {4, 4, 4, 4, 7};
+			case 'n': return {0, 6, 5, 5, 5};
+			case 'o': return {0, 7, 5, 5, 7};
+			case 'r': return {6, 5, 6, 5, 5};
+			case 's': return {7, 4, 7, 1, 7};
+			case 't': return {7, 2, 2, 2, 2};
+			case 'u': return {5, 5, 5, 5, 7};
+			case 'v': return {5, 5, 5, 5, 2};
+			case 'y': return {5, 5, 2, 2, 2};
+			case '/': return {1, 1, 2, 4, 4};
+			case '.': return {0, 0, 0, 0, 2};
+			default: return {0, 0, 0, 0, 0};
+		}
+	}
+
+	void addQuad(std::vector<std::pair<float, float>>& vertices,
+		const float left, const float top, const float right, const float bottom)
+	{
+		vertices.insert(vertices.end(), {{left, top}, {right, top},
+			{right, bottom}, {left, top}, {right, bottom}, {left, bottom}});
+	}
+
+	void drawPixelText(const std::string& text, const float left,
+		const float top, const float pixel, const std::uint32_t textColor,
+		const float offset = 0.f)
+	{
+		std::vector<std::pair<float, float>> vertices;
+		for ( std::size_t index = 0; index < text.size(); ++index )
+		{
+			const auto rows = glyphRows(text[index]);
+			const float glyphX = left + static_cast<float>(index) * pixel * 4.f;
+			for ( int row = 0; row < 5; ++row )
+			{
+				for ( int column = 0; column < 3; ++column )
+				{
+					if ( !(rows[row] & (1U << (2 - column))) ) { continue; }
+					const float x = glyphX + column * pixel + offset;
+					const float y = top + row * pixel + offset;
+					addQuad(vertices, x, y, x + pixel, y + pixel);
+				}
+			}
+		}
+		primitive(vertices, textColor, GL_TRIANGLES);
+	}
+
 	struct MarkerTransform { float x; float y; float unitX; float unitY; };
 
 	MarkerTransform transform(const double mapX, const double mapY,
@@ -2370,6 +2689,69 @@ namespace
 		return {(static_cast<float>(mapX) - xmin) * unitX + currentRect.x * scaleX,
 			(static_cast<float>(mapY) - ymin) * unitY + currentRect.y * scaleY,
 			unitX, unitY};
+	}
+
+	void drawGhostCountHud(const RenderScope& scope)
+	{
+		if ( !validViewer(currentViewer) || !ghostNearExit[currentViewer] )
+		{
+			return;
+		}
+		std::array<char, 64> buffer {};
+		if ( multiplayerMode() == layout::multiplayerClient )
+		{
+			const int viewer = localPlayerSlot();
+			if ( !validViewer(viewer) || !synchronizedExitCountsValid[viewer] )
+			{
+				std::snprintf(buffer.data(), buffer.size(), "syncing...");
+			}
+			else
+			{
+				quality::minimap::formatCreatureCounts(buffer.data(), buffer.size(),
+					synchronizedExitCounts[viewer].first,
+					synchronizedExitCounts[viewer].second);
+			}
+		}
+		else
+		{
+			const auto counts = exitCreatureCountsForViewer(currentViewer);
+			quality::minimap::formatCreatureCounts(buffer.data(), buffer.size(),
+				counts.first, counts.second);
+		}
+
+		int virtualX = scope.viewport[2];
+		int virtualY = scope.viewport[3];
+		auto** virtualXPointer = reinterpret_cast<int**>(base + virtualScreenXPointerRva);
+		auto** virtualYPointer = reinterpret_cast<int**>(base + virtualScreenYPointerRva);
+		if ( *virtualXPointer && **virtualXPointer > 0 ) { virtualX = **virtualXPointer; }
+		if ( *virtualYPointer && **virtualYPointer > 0 ) { virtualY = **virtualYPointer; }
+		const float scaleX = static_cast<float>(scope.viewport[2]) / virtualX;
+		const float scaleY = static_cast<float>(scope.viewport[3]) / virtualY;
+		const float pixel = std::max(1.f, 2.f * std::min(scaleX, scaleY));
+		const std::string text(buffer.data());
+		const float textWidth = text.empty() ? 0.f
+			: static_cast<float>(text.size() * 4 - 1) * pixel;
+		const float textHeight = 5.f * pixel;
+		const float mapLeft = currentRect.x * scaleX;
+		const float mapTop = currentRect.y * scaleY;
+		const float mapWidth = currentRect.w * scaleX;
+		const float mapHeight = currentRect.h * scaleY;
+		float left = mapLeft + (mapWidth - textWidth) * .5f;
+		left = std::clamp(left, 4.f,
+			std::max(4.f, static_cast<float>(scope.viewport[2]) - textWidth - 4.f));
+		float top = mapTop + mapHeight + 5.f;
+		if ( top + textHeight + 4.f > scope.viewport[3] )
+		{
+			top = std::max(4.f, mapTop - textHeight - 5.f);
+		}
+		std::vector<std::pair<float, float>> background;
+		addQuad(background, left - 3.f, top - 3.f,
+			left + textWidth + 3.f, top + textHeight + 3.f);
+		primitive(background, quality::minimap::color(0, 0, 0, 176),
+			GL_TRIANGLES);
+		drawPixelText(text, left, top, pixel,
+			quality::minimap::color(0, 0, 0, 255), 1.f);
+		drawPixelText(text, left, top, pixel, quality::minimap::white);
 	}
 
 	void drawCircledSkull(const MarkerTransform& marker,
@@ -2564,6 +2946,7 @@ namespace
 					break;
 			}
 		}
+		drawGhostCountHud(scope);
 	}
 
 	void imageDrawHook(const std::uint32_t texture, const int width,

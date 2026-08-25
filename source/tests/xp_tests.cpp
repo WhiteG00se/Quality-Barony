@@ -202,6 +202,10 @@ namespace
 			"Step through portal", 12, 3);
 		assert(std::string(text.data())
 			== "Step through portal\n12 hostiles / 3 neutrals alive");
+		quality::minimap::formatExitTooltipSyncing(text.data(), text.size(),
+			"Exit dungeon floor");
+		assert(std::string(text.data())
+			== "Exit dungeon floor\nEnemy count syncing...");
 	}
 
 	void testPersistentRevealLifecycle()
@@ -577,17 +581,24 @@ namespace
 		assert(!acceptSightingSnapshot(true, false, true, true, 3, 2));
 		assert(!acceptSightingSnapshot(true, true, true, false, 3, 2));
 		assert(ordinarySightingVisible(Disposition::Hostile,
-			false, false, true, true));
+			false, false, true, true, false, true));
 		assert(!ordinarySightingVisible(Disposition::Hostile,
-			true, false, true, true));
+			true, false, true, true, false, true));
 		assert(ordinarySightingVisible(Disposition::Hostile,
-			true, true, true, true));
+			true, true, true, true, false, true));
 		assert(!ordinarySightingVisible(Disposition::Neutral,
-			false, false, true, true));
+			false, false, true, true, false, true));
 		assert(!ordinarySightingVisible(Disposition::Hostile,
-			false, false, false, true));
+			false, false, false, true, false, true));
 		assert(!ordinarySightingVisible(Disposition::Hostile,
-			false, false, true, false));
+			false, false, true, false, false, true));
+		assert(ordinarySightingVisible(Disposition::Hostile,
+			false, false, false, false, true, true));
+		assert(!ordinarySightingVisible(Disposition::Hostile,
+			false, false, true, true, false, false));
+		assert(ghostWithinExitNeighborhood(10, 10, 10, 10));
+		assert(ghostWithinExitNeighborhood(9, 11, 10, 10));
+		assert(!ghostWithinExitNeighborhood(8, 10, 10, 10));
 
 		const std::array<std::array<bool, 5>, 5> walls {{
 			{{false, false, false, false, false}},

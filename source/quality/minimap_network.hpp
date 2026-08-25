@@ -4,9 +4,9 @@
 
 namespace quality::minimap::network
 {
-	constexpr std::uint8_t protocolVersion = 5;
+	constexpr std::uint8_t protocolVersion = 6;
 	constexpr std::uint8_t rosterProtocolVersion = 2;
-	constexpr std::uint8_t sightingProtocolVersion = 2;
+	constexpr std::uint8_t sightingProtocolVersion = 3;
 
 	enum class Stream : std::uint8_t { State, Roster, Sightings };
 

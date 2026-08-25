@@ -115,6 +115,17 @@ namespace quality::minimap
 			exitText ? exitText : "", counts.data());
 	}
 
+	inline int formatExitTooltipSyncing(char* output,
+		const std::size_t outputSize, const char* exitText)
+	{
+		if ( !output || outputSize == 0 )
+		{
+			return -1;
+		}
+		return std::snprintf(output, outputSize, "%s\nEnemy count syncing...",
+			exitText ? exitText : "");
+	}
+
 	constexpr bool exitVisible(const std::uint8_t visibility,
 		const std::uint32_t showOnMap, const bool customPortal)
 	{

@@ -1,25 +1,13 @@
 #pragma once
 
 #include <algorithm>
-#include <array>
 #include <cmath>
 #include <cstdint>
-#include <unordered_set>
-#include <vector>
 
 namespace quality::minimap::creatures
 {
 	constexpr int maximumPlayers = 4;
 	constexpr double angleEpsilon = 1.0e-9;
-
-	constexpr bool acceptSightingSnapshot(const bool capability,
-		const bool acceptedSender, const bool matchingFloor,
-		const bool matchingGeneration, const std::uint32_t sequence,
-		const std::uint32_t currentSequence)
-	{
-		return capability && acceptedSender && matchingFloor && matchingGeneration
-			&& sequence != 0 && sequence >= currentSequence;
-	}
 
 	enum class Disposition : std::uint8_t
 	{
@@ -199,51 +187,4 @@ namespace quality::minimap::creatures
 		int triggerNeutrals_ = 0;
 	};
 
-	class SightingUnion
-	{
-	public:
-		bool replace(const int player, const std::uint32_t sequence,
-			const std::vector<std::uint32_t>& uids)
-		{
-			if ( player < 0 || player >= maximumPlayers
-				|| sequence == 0 || sequence <= sequences_[player] )
-			{
-				return false;
-			}
-			sequences_[player] = sequence;
-			byPlayer_[player].clear();
-			for ( const auto uid : uids )
-			{
-				if ( uid ) { byPlayer_[player].insert(uid); }
-			}
-			return true;
-		}
-
-		void clearPlayer(const int player)
-		{
-			if ( player < 0 || player >= maximumPlayers ) { return; }
-			byPlayer_[player].clear();
-			sequences_[player] = 0;
-		}
-
-		void reset()
-		{
-			for ( auto& sightings : byPlayer_ ) { sightings.clear(); }
-			sequences_.fill(0);
-		}
-
-		std::unordered_set<std::uint32_t> combined() const
-		{
-			std::unordered_set<std::uint32_t> result;
-			for ( const auto& sightings : byPlayer_ )
-			{
-				result.insert(sightings.begin(), sightings.end());
-			}
-			return result;
-		}
-
-	private:
-		std::array<std::unordered_set<std::uint32_t>, maximumPlayers> byPlayer_;
-		std::array<std::uint32_t, maximumPlayers> sequences_ {};
-	};
 }

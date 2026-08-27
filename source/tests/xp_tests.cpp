@@ -172,19 +172,15 @@ namespace
 	{
 		using quality::minimap::ExitCreatureDisposition;
 		using quality::minimap::classifyExitCreature;
-		assert(classifyExitCreature(true, -1, true, 10, false)
+		assert(classifyExitCreature(true, -1, true, false)
 			== ExitCreatureDisposition::Hostile);
-		assert(classifyExitCreature(true, -1, true, 10, true)
+		assert(classifyExitCreature(true, -1, true, true)
 			== ExitCreatureDisposition::Neutral);
-		assert(classifyExitCreature(true, 0, true, 10, false)
+		assert(classifyExitCreature(true, 0, true, false)
 			== ExitCreatureDisposition::Excluded);
-		assert(classifyExitCreature(true, -1, true, 0, false)
+		assert(classifyExitCreature(true, -1, false, false)
 			== ExitCreatureDisposition::Excluded);
-		assert(classifyExitCreature(true, -1, true, -1, false)
-			== ExitCreatureDisposition::Excluded);
-		assert(classifyExitCreature(true, -1, false, 10, false)
-			== ExitCreatureDisposition::Excluded);
-		assert(classifyExitCreature(false, -1, true, 10, false)
+		assert(classifyExitCreature(false, -1, true, false)
 			== ExitCreatureDisposition::Excluded);
 
 		std::array<char, 128> text {};
@@ -202,10 +198,6 @@ namespace
 			"Step through portal", 12, 3);
 		assert(std::string(text.data())
 			== "Step through portal\n12 hostiles / 3 neutrals alive");
-		quality::minimap::formatExitTooltipSyncing(text.data(), text.size(),
-			"Exit dungeon floor");
-		assert(std::string(text.data())
-			== "Exit dungeon floor\nEnemy count syncing...");
 	}
 
 	void testPersistentRevealLifecycle()
@@ -404,7 +396,6 @@ namespace
 		using namespace quality::minimap::network;
 		static_assert(compatible(Stream::State, protocolVersion));
 		static_assert(compatible(Stream::Roster, rosterProtocolVersion));
-		static_assert(compatible(Stream::Sightings, sightingProtocolVersion));
 		static_assert(!compatible(Stream::State, protocolVersion - 1));
 		static_assert(!compatible(Stream::Roster, rosterProtocolVersion - 1));
 		static_assert(validSender(1, 1));
@@ -573,13 +564,6 @@ namespace
 		assert(inForwardHalfPlane(0, 0, 0, 0, -10));
 		assert(!inForwardHalfPlane(0, 0, 0, -0.001, 10));
 		assert(!inForwardHalfPlane(0, 0, pi, 10, 0));
-		assert(acceptSightingSnapshot(true, true, true, true, 3, 2));
-		assert(acceptSightingSnapshot(true, true, true, true, 2, 2));
-		assert(!acceptSightingSnapshot(true, true, true, true, 1, 2));
-		assert(!acceptSightingSnapshot(true, true, false, true, 3, 2));
-		assert(!acceptSightingSnapshot(false, true, true, true, 3, 2));
-		assert(!acceptSightingSnapshot(true, false, true, true, 3, 2));
-		assert(!acceptSightingSnapshot(true, true, true, false, 3, 2));
 		assert(ordinarySightingVisible(Disposition::Hostile,
 			false, false, true, true, false, true));
 		assert(!ordinarySightingVisible(Disposition::Hostile,
@@ -648,19 +632,6 @@ namespace
 		assert(zeroHostiles.update(0, 2));
 		reveal.reset();
 		assert(!reveal.activated() && !reveal.latched());
-
-		SightingUnion sightings;
-		assert(sightings.replace(0, 1, {10, 20}));
-		assert(sightings.replace(1, 1, {20, 30}));
-		assert(!sightings.replace(1, 1, {40}));
-		auto combined = sightings.combined();
-		assert(combined.size() == 3 && combined.count(10)
-			&& combined.count(20) && combined.count(30));
-		assert(sightings.replace(0, 2, {}));
-		combined = sightings.combined();
-		assert(combined.size() == 2 && !combined.count(10));
-		sightings.clearPlayer(1);
-		assert(sightings.combined().empty());
 	}
 }
 

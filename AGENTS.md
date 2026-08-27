@@ -1,5 +1,7 @@
 # Quality Barony agent instructions
 
+- Prefix every final reply with `Answer:`. Exclude internal reasoning and plan-mode questions.
+
 ## Repository boundaries
 
 - `Barony-Repo/` is a separate Git repository nested inside this repository. It contains the source code of Barony and is reference material only.

@@ -80,10 +80,10 @@ namespace quality::minimap
 	};
 
 	constexpr ExitCreatureDisposition classifyExitCreature(
-		const bool monster, const int allyIndex, const bool hasStats,
-		const int hp, const bool friendly)
+		const bool monster, const int allyIndex, const bool alive,
+		const bool friendly)
 	{
-		if ( !monster || allyIndex >= 0 || !hasStats || hp <= 0 )
+		if ( !monster || allyIndex >= 0 || !alive )
 		{
 			return ExitCreatureDisposition::Excluded;
 		}
@@ -113,17 +113,6 @@ namespace quality::minimap
 		formatCreatureCounts(counts.data(), counts.size(), hostiles, neutrals);
 		return std::snprintf(output, outputSize, "%s\n%s",
 			exitText ? exitText : "", counts.data());
-	}
-
-	inline int formatExitTooltipSyncing(char* output,
-		const std::size_t outputSize, const char* exitText)
-	{
-		if ( !output || outputSize == 0 )
-		{
-			return -1;
-		}
-		return std::snprintf(output, outputSize, "%s\nEnemy count syncing...",
-			exitText ? exitText : "");
 	}
 
 	constexpr bool exitVisible(const std::uint8_t visibility,

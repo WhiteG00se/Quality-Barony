@@ -422,24 +422,10 @@ namespace
 		quality::minimap::creatures::maximumPlayers> revealStates;
 	std::array<quality::minimap::creatures::FinalRevealState,
 		quality::minimap::creatures::maximumPlayers> finalRevealStates;
-	quality::minimap::creatures::SightingUnion localSightings;
-	std::array<std::uint32_t, quality::minimap::creatures::maximumPlayers>
-		localSightingSequences {};
-	std::unordered_set<std::uint32_t> receivedPartySightings;
 	std::vector<quality::minimap::reveal::Candidate> revealCandidates;
 	std::array<char, 512> exitTooltipText {};
-	std::array<std::pair<int, int>, quality::minimap::creatures::maximumPlayers>
-		synchronizedExitCounts {};
-	std::array<bool, quality::minimap::creatures::maximumPlayers>
-		synchronizedExitCountsValid {};
 	std::array<bool, quality::minimap::creatures::maximumPlayers>
 		exitRevealActivated {};
-	std::array<std::pair<int, int>, quality::minimap::creatures::maximumPlayers>
-		publishedExitCounts {};
-	std::array<bool, quality::minimap::creatures::maximumPlayers>
-		publishedExitCountsValid {};
-	std::array<std::uint32_t, quality::minimap::creatures::maximumPlayers>
-		lastExitCountPublishTick {};
 	std::array<bool, quality::minimap::creatures::maximumPlayers>
 		ghostNearExit {};
 	quality::minimap::chests::State chestState;
@@ -531,12 +517,14 @@ namespace
 	enum class PacketKind : std::uint8_t
 	{
 		Hello = 1,
-		Request = 2,
-		Counts = 3,
+		ReservedRequest = 2,
+		ReservedCounts = 3,
 		Acknowledgement = 4,
 		Welcome = 5,
 		ChestState = 8,
 	};
+	static_assert(static_cast<std::uint8_t>(PacketKind::ReservedRequest) == 2);
+	static_assert(static_cast<std::uint8_t>(PacketKind::ReservedCounts) == 3);
 	enum class RosterPacketKind : std::uint8_t
 	{
 		Upsert = 1,
@@ -554,11 +542,6 @@ namespace
 
 	constexpr std::size_t packetSize = 48;
 	constexpr std::size_t rosterPacketSize = 184;
-	constexpr std::size_t sightingPacketSize = 512;
-	constexpr std::size_t sightingHeaderSize = 36;
-	constexpr std::size_t sightingUidsPerPacket =
-		(sightingPacketSize - sightingHeaderSize) / sizeof(std::uint32_t);
-	constexpr std::uint32_t sightingCapability = 0x43525331U; // CRS1
 	struct PendingPacket
 	{
 		std::vector<std::uint8_t> bytes;
@@ -573,25 +556,8 @@ namespace
 	std::array<std::uint32_t, quality::minimap::creatures::maximumPlayers>
 		clientGenerations {};
 	std::unordered_set<std::uint64_t> appliedPackets;
-	std::unordered_set<int> sightingCapableClients;
-	bool hostSightingCapable = false;
 	bool clientWelcomed = false;
 	std::uint32_t lastHelloTick = 0;
-	std::uint32_t partySightingSequence = 1;
-	std::uint32_t lastSightingPublishTick = 0;
-	struct SightingAssembly
-	{
-		std::uint32_t sequence = 0;
-		std::uint16_t chunkCount = 0;
-		std::vector<std::vector<std::uint32_t>> chunks;
-		std::vector<bool> received;
-	};
-	std::array<SightingAssembly, quality::minimap::creatures::maximumPlayers>
-		remoteSightingAssemblies;
-	std::array<std::uint32_t, quality::minimap::creatures::maximumPlayers>
-		lastRemoteSightingTick {};
-	SightingAssembly partySightingAssembly;
-	std::uint32_t lastPartySightingTick = 0;
 	bool flushingPackets = false;
 
 	void writeU32(std::uint8_t* output, const std::size_t offset,
@@ -711,100 +677,6 @@ namespace
 		sendBytes(bytes.data(), bytes.size(), targetPlayer);
 	}
 
-	std::array<std::uint8_t, sightingPacketSize> makeSightingPacket(
-		const int reporter, const std::uint32_t sequence,
-		const std::uint32_t generation, const std::uint16_t chunkIndex,
-		const std::uint16_t chunkCount, const std::uint32_t* uids,
-		const std::uint16_t uidCount)
-	{
-		std::array<std::uint8_t, sightingPacketSize> bytes {};
-		bytes[0] = 'Q'; bytes[1] = 'M'; bytes[2] = 'S'; bytes[3] = 'I';
-		bytes[4] = quality::minimap::network::sightingProtocolVersion;
-		bytes[5] = 1;
-		bytes[6] = *reinterpret_cast<std::uint8_t*>(base + secretLevelRva) ? 1 : 0;
-		bytes[7] = static_cast<std::uint8_t>(reporter);
-		bytes[15] = static_cast<std::uint8_t>(localPlayerSlot());
-		writeU32(bytes.data(), 8, sequence);
-		writeU32(bytes.data(), 16, static_cast<std::uint32_t>(
-			*reinterpret_cast<std::int32_t*>(base + currentLevelRva)));
-		writeU32(bytes.data(), 20,
-			*reinterpret_cast<std::uint32_t*>(base + mapSeedRva));
-		writeU32(bytes.data(), 24, generation);
-		writeU16(bytes.data(), 28, chunkIndex);
-		writeU16(bytes.data(), 30, chunkCount);
-		writeU16(bytes.data(), 32, uidCount);
-		for ( std::uint16_t index = 0; index < uidCount; ++index )
-		{
-			writeU32(bytes.data(), sightingHeaderSize + index * 4, uids[index]);
-		}
-		return bytes;
-	}
-
-	void sendSightingSnapshot(const int targetPlayer,
-		const std::uint32_t generation, const int reporter,
-		std::uint32_t sequence, const std::unordered_set<std::uint32_t>& sightings)
-	{
-		if ( sequence == 0 ) { sequence = 1; }
-		std::vector<std::uint32_t> sorted(sightings.begin(), sightings.end());
-		std::sort(sorted.begin(), sorted.end());
-		const std::size_t chunks = std::max<std::size_t>(1,
-			(sorted.size() + sightingUidsPerPacket - 1) / sightingUidsPerPacket);
-		if ( chunks > UINT16_MAX ) { return; }
-		for ( std::size_t chunk = 0; chunk < chunks; ++chunk )
-		{
-			const std::size_t offset = chunk * sightingUidsPerPacket;
-			const auto count = static_cast<std::uint16_t>(std::min(
-				sightingUidsPerPacket, sorted.size() - std::min(offset, sorted.size())));
-			const std::uint32_t* first = count ? sorted.data() + offset : nullptr;
-			sendBytes(makeSightingPacket(reporter, sequence, generation,
-				static_cast<std::uint16_t>(chunk),
-				static_cast<std::uint16_t>(chunks), first, count), targetPlayer);
-		}
-	}
-
-	bool acceptSightingChunk(SightingAssembly& assembly,
-		const std::uint8_t* bytes, std::vector<std::uint32_t>& complete)
-	{
-		const auto sequence = readU32(bytes, 8);
-		const auto chunkIndex = readU16(bytes, 28);
-		const auto chunkCount = readU16(bytes, 30);
-		const auto uidCount = readU16(bytes, 32);
-		if ( sequence == 0 || chunkCount == 0 || chunkIndex >= chunkCount
-			|| uidCount > sightingUidsPerPacket || chunkCount > 256 )
-		{
-			return false;
-		}
-		if ( sequence < assembly.sequence ) { return false; }
-		if ( sequence > assembly.sequence || assembly.chunkCount != chunkCount )
-		{
-			assembly.sequence = sequence;
-			assembly.chunkCount = chunkCount;
-			assembly.chunks.assign(chunkCount, {});
-			assembly.received.assign(chunkCount, false);
-		}
-		if ( assembly.received[chunkIndex] ) { return false; }
-		auto& chunk = assembly.chunks[chunkIndex];
-		chunk.reserve(uidCount);
-		for ( std::uint16_t index = 0; index < uidCount; ++index )
-		{
-			const auto entityUid = readU32(bytes,
-				sightingHeaderSize + index * sizeof(std::uint32_t));
-			if ( entityUid ) { chunk.push_back(entityUid); }
-		}
-		assembly.received[chunkIndex] = true;
-		if ( std::find(assembly.received.begin(), assembly.received.end(), false)
-			!= assembly.received.end() )
-		{
-			return false;
-		}
-		complete.clear();
-		for ( const auto& part : assembly.chunks )
-		{
-			complete.insert(complete.end(), part.begin(), part.end());
-		}
-		return true;
-	}
-
 	void queueReliable(const PacketKind kind, const int targetPlayer,
 		const std::uint32_t generation,
 		const ItemPacketPayload payload = {})
@@ -833,7 +705,7 @@ namespace
 		std::uint32_t sequence = networkSequence++;
 		if ( sequence == 0 ) { sequence = networkSequence++; }
 		sendBytes(makePacket(PacketKind::Hello, sequence, 0,
-			localGeneration, {sightingCapability}), 0);
+			localGeneration), 0);
 		lastHelloTick = now;
 	}
 
@@ -938,14 +810,6 @@ namespace
 	void observeRevealUsesAll(const std::uint32_t entityUid, const int uses)
 	{
 		for ( auto& state : revealStates ) { state.observeUses(entityUid, uses); }
-	}
-
-	ItemPacketPayload exitCountsPayload(const int viewer)
-	{
-		const auto counts = exitCreatureCountsForViewer(viewer);
-		return {static_cast<std::uint32_t>(counts.first),
-			static_cast<std::uint32_t>(counts.second),
-			static_cast<std::uint32_t>(viewer)};
 	}
 
 	void broadcastToReadyClients(const PacketKind kind,
@@ -1075,40 +939,17 @@ namespace
 		exitRevealActivated[viewer] = true;
 		finalRevealStates[viewer].activate();
 		refreshRevealSnapshot(viewer);
-		if ( multiplayerMode() == 2 )
-		{
-			sendHello(!clientWelcomed);
-			if ( clientWelcomed )
-			{
-				queueReliable(PacketKind::Request, 0, localGeneration);
-			}
-		}
 	}
 
 	void resetRevealFloor()
 	{
 		for ( auto& state : revealStates ) { state.reset(); }
 		for ( auto& state : finalRevealStates ) { state.reset(); }
-		localSightings.reset();
-		localSightingSequences.fill(0);
-		receivedPartySightings.clear();
 		revealCandidates.clear();
-		synchronizedExitCounts.fill({});
-		synchronizedExitCountsValid.fill(false);
 		exitRevealActivated.fill(false);
-		publishedExitCountsValid.fill(false);
-		lastExitCountPublishTick.fill(0);
 		ghostNearExit.fill(false);
-		sightingCapableClients.clear();
-		hostSightingCapable = false;
 		clientWelcomed = false;
 		lastHelloTick = 0;
-		partySightingSequence = 1;
-		lastSightingPublishTick = 0;
-		for ( auto& assembly : remoteSightingAssemblies ) { assembly = {}; }
-		lastRemoteSightingTick.fill(0);
-		partySightingAssembly = {};
-		lastPartySightingTick = 0;
 		chestState.reset();
 		immediateBlueItems.clear();
 		sharedFollowerRoster.reset();
@@ -1153,68 +994,12 @@ namespace
 				RosterPacketKind::Remove);
 	}
 
-	bool isSightingPacket(const UdpPacket* packet)
-	{
-		return packet && packet->data
-			&& packet->len == static_cast<int>(sightingPacketSize)
-			&& std::memcmp(packet->data, "QMSI", 4) == 0
-			&& quality::minimap::network::compatible(
-				quality::minimap::network::Stream::Sightings, packet->data[4])
-			&& packet->data[5] == 1;
-	}
-
 	bool hasQualityMagic(const UdpPacket* packet)
 	{
 		return packet && packet->data && packet->len >= 4
 			&& (std::memcmp(packet->data, "QMRF", 4) == 0
 				|| std::memcmp(packet->data, "QFRS", 4) == 0
 				|| std::memcmp(packet->data, "QMSI", 4) == 0);
-	}
-
-	void processSightingPacket(const UdpPacket* packet)
-	{
-		const bool matchingFloor = floorMatches(packet->data);
-		std::vector<std::uint32_t> complete;
-		if ( multiplayerMode() == 1 )
-		{
-			const int player = packet->data[15];
-			const auto generation = validViewer(player)
-				? clientGenerations[player] : 0;
-			if ( !quality::minimap::network::validSender(1, player)
-				|| generation == 0 || packet->data[7] != player
-				|| !quality::minimap::creatures::acceptSightingSnapshot(
-					sightingCapableClients.count(player) != 0, true, matchingFloor,
-					readU32(packet->data, 24) == generation,
-					readU32(packet->data, 8),
-					remoteSightingAssemblies[player].sequence) )
-			{
-				return;
-			}
-			if ( acceptSightingChunk(remoteSightingAssemblies[player],
-				packet->data, complete) )
-			{
-				localSightings.replace(player, readU32(packet->data, 8), complete);
-				lastRemoteSightingTick[player] =
-					*reinterpret_cast<std::uint32_t*>(base + ticksRva);
-			}
-		}
-		else if ( multiplayerMode() == layout::multiplayerClient
-			&& clientWelcomed
-			&& quality::minimap::creatures::acceptSightingSnapshot(true,
-				packet->data[15] == 0,
-				matchingFloor, readU32(packet->data, 24) == localGeneration,
-				readU32(packet->data, 8), partySightingAssembly.sequence) )
-		{
-			hostSightingCapable = true;
-			if ( acceptSightingChunk(partySightingAssembly,
-				packet->data, complete) )
-			{
-				receivedPartySightings.clear();
-				receivedPartySightings.insert(complete.begin(), complete.end());
-				lastPartySightingTick =
-					*reinterpret_cast<std::uint32_t*>(base + ticksRva);
-			}
-		}
 	}
 
 	void processRosterPacket(const UdpPacket* packet)
@@ -1302,8 +1087,8 @@ namespace
 		if ( multiplayerMode() == layout::multiplayerClient
 			&& !clientWelcomed && !clientWelcome )
 		{
-			// Counts and chest snapshots can race ahead of Welcome. Do not
-			// acknowledge them until the session is established so they retry.
+			// Chest snapshots can race ahead of Welcome. Do not acknowledge them
+			// until the session is established so they retry.
 			return;
 		}
 		sendAcknowledgement(sender, sequence);
@@ -1313,8 +1098,7 @@ namespace
 		{
 			return;
 		}
-		if ( multiplayerMode() == 1
-			&& (kind == PacketKind::Hello || kind == PacketKind::Request) )
+		if ( multiplayerMode() == 1 && kind == PacketKind::Hello )
 		{
 			const int requestingPlayer = sender;
 			const auto* disconnected = base + clientDisconnectedRva;
@@ -1324,51 +1108,20 @@ namespace
 				return;
 			}
 			auto& accepted = clientGenerations[requestingPlayer];
-			if ( kind == PacketKind::Hello )
+			// Hello deliberately is not floor-gated. The Welcome response carries
+			// the host's current floor identity, so either loading order converges.
+			accepted = generation;
+			queueReliable(PacketKind::Welcome, requestingPlayer, accepted,
+				{0, 0, static_cast<std::uint32_t>(requestingPlayer)});
+			for ( const auto& update : chestState.snapshots() )
 			{
-				// Hello deliberately is not floor-gated. The Welcome response carries
-				// the host's current floor identity, so either loading order converges.
-				accepted = generation;
-				const bool sightingCapable = readU32(packet->data, 32)
-					== sightingCapability;
-				if ( sightingCapable )
-				{
-					sightingCapableClients.insert(requestingPlayer);
-				}
-				else { sightingCapableClients.erase(requestingPlayer); }
-				queueReliable(PacketKind::Welcome, requestingPlayer, accepted,
-					{sightingCapable ? sightingCapability : 0U, 0,
-						static_cast<std::uint32_t>(requestingPlayer)});
-				for ( const auto& update : chestState.snapshots() )
-				{
-					queueReliable(PacketKind::ChestState, requestingPlayer,
-						accepted, chestPayload(update));
-				}
-				for ( const auto& follower : publishedFollowerRoster.entries() )
-				{
-					queueRosterReliable(RosterPacketKind::Upsert, requestingPlayer,
-						accepted, follower.second);
-				}
-				queueReliable(PacketKind::Counts, requestingPlayer, accepted,
-					exitCountsPayload(requestingPlayer));
-				publishedExitCounts[requestingPlayer] =
-					exitCreatureCountsForViewer(requestingPlayer);
-				publishedExitCountsValid[requestingPlayer] = true;
-				lastExitCountPublishTick[requestingPlayer] =
-					*reinterpret_cast<std::uint32_t*>(base + ticksRva);
-				if ( sightingCapable )
-				{
-					sendSightingSnapshot(requestingPlayer, accepted, 0xFF,
-						partySightingSequence, localSightings.combined());
-				}
+				queueReliable(PacketKind::ChestState, requestingPlayer,
+					accepted, chestPayload(update));
 			}
-			else if ( quality::minimap::reveal::acceptHostRequest(true, true,
-				generation, accepted) )
+			for ( const auto& follower : publishedFollowerRoster.entries() )
 			{
-				exitRevealActivated[requestingPlayer] = true;
-				publishedExitCountsValid[requestingPlayer] = false;
-				queueReliable(PacketKind::Counts, requestingPlayer, accepted,
-					exitCountsPayload(requestingPlayer));
+				queueRosterReliable(RosterPacketKind::Upsert, requestingPlayer,
+					accepted, follower.second);
 			}
 		}
 		else if ( multiplayerMode() == 2
@@ -1377,48 +1130,26 @@ namespace
 			const int target = static_cast<int>(readU32(packet->data, 40));
 			if ( target != localPlayerSlot() ) { return; }
 			clientWelcomed = true;
-			hostSightingCapable = readU32(packet->data, 32)
-				== sightingCapability;
-			const int viewer = localPlayerSlot();
-			if ( validViewer(viewer) && exitRevealActivated[viewer] )
-			{
-				queueReliable(PacketKind::Request, 0, localGeneration);
-			}
 		}
 		else if ( multiplayerMode() == 2 && clientWelcomed
-			&& (kind == PacketKind::Counts || kind == PacketKind::ChestState)
+			&& kind == PacketKind::ChestState
 			&& quality::minimap::reveal::acceptClientRefresh(sender == 0,
 				true, generation, localGeneration) )
 		{
-			if ( kind == PacketKind::Counts )
+			const ItemPacketPayload payload {
+				readU32(packet->data, 32), readU32(packet->data, 36),
+				readU32(packet->data, 40), readU16(packet->data, 44),
+				readU16(packet->data, 46),
+			};
+			if ( quality::minimap::chests::validContentsValue(
+				payload.inventoryKey) )
 			{
-				const int target = static_cast<int>(readU32(packet->data, 40));
-				const int viewer = localPlayerSlot();
-				if ( !validViewer(viewer) || target != viewer ) { return; }
-				synchronizedExitCounts[viewer] = {
-					static_cast<int>(readU32(packet->data, 32)),
-					static_cast<int>(readU32(packet->data, 36)),
+				const quality::minimap::chests::Update update {
+					payload.markerId, payload.x, payload.y,
+					static_cast<quality::minimap::chests::Contents>(
+						payload.inventoryKey),
 				};
-				synchronizedExitCountsValid[viewer] = true;
-			}
-			else
-			{
-				const ItemPacketPayload payload {
-					readU32(packet->data, 32), readU32(packet->data, 36),
-					readU32(packet->data, 40), readU16(packet->data, 44),
-					readU16(packet->data, 46),
-				};
-				if ( kind == PacketKind::ChestState
-					&& quality::minimap::chests::validContentsValue(
-						payload.inventoryKey) )
-				{
-					const quality::minimap::chests::Update update {
-						payload.markerId, payload.x, payload.y,
-						static_cast<quality::minimap::chests::Contents>(
-							payload.inventoryKey),
-					};
-					chestState.apply(update);
-				}
+				chestState.apply(update);
 			}
 		}
 	}
@@ -1435,7 +1166,6 @@ namespace
 	{
 		if ( isQualityPacket(packet) ) { processQualityPacket(packet); }
 		else if ( isRosterPacket(packet) ) { processRosterPacket(packet); }
-		else if ( isSightingPacket(packet) ) { processSightingPacket(packet); }
 		else { return hasQualityMagic(packet); }
 		return true;
 	}
@@ -1663,8 +1393,9 @@ namespace
 	{
 		int hostiles = 0;
 		int neutrals = 0;
-		if ( viewer < 0 || viewer >= 4 || !getStats
-			|| !monsterIsFriendlyForTooltip )
+		const bool clientEstimate = multiplayerMode() == layout::multiplayerClient;
+		if ( viewer < 0 || viewer >= 4 || !monsterIsFriendlyForTooltip
+			|| (!clientEstimate && !getStats) )
 		{
 			return {hostiles, neutrals};
 		}
@@ -1699,15 +1430,18 @@ namespace
 			}
 			const bool monster = behavior(entity)
 				== reinterpret_cast<std::uintptr_t>(base + actMonsterRva);
-			auto* stats = monster ? getStats(entity) : nullptr;
+			auto* stats = monster && getStats ? getStats(entity) : nullptr;
 			const int hp = stats
 				? field<std::int32_t>(stats, layout::statHp) : 0;
 			const int allyIndex = skill(entity, skillMonsterAllyIndex);
-			const bool countable = monster && allyIndex < 0 && stats && hp > 0;
+			// Ordinary clients do not receive authoritative monster HP. Presence in
+			// map.creatures is their best available live-state signal.
+			const bool alive = clientEstimate || (stats && hp > 0);
+			const bool countable = monster && allyIndex < 0 && alive;
 			const bool friendly = countable
 				&& monsterIsFriendlyForTooltip(classificationViewer, entity);
 			switch ( quality::minimap::classifyExitCreature(monster, allyIndex,
-				stats != nullptr, hp, friendly) )
+				alive, friendly) )
 			{
 				case quality::minimap::ExitCreatureDisposition::Hostile:
 					++hostiles;
@@ -1736,11 +1470,6 @@ namespace
 		const int uiViewer = field<std::int32_t>(player, playerNumber);
 		const int viewer = multiplayerMode() == layout::multiplayerClient
 			? localPlayerSlot() : uiViewer;
-		if ( multiplayerMode() == 2 && validViewer(viewer)
-			&& synchronizedExitCountsValid[viewer] )
-		{
-			return synchronizedExitCounts[viewer];
-		}
 		return exitCreatureCountsForViewer(viewer);
 	}
 
@@ -1762,21 +1491,9 @@ namespace
 		{
 			requestLocalRefresh(viewer);
 		}
-		const int countViewer = multiplayerMode() == layout::multiplayerClient
-			? localPlayerSlot() : viewer;
-		if ( multiplayerMode() == layout::multiplayerClient
-			&& (!validViewer(countViewer)
-				|| !synchronizedExitCountsValid[countViewer]) )
-		{
-			quality::minimap::formatExitTooltipSyncing(exitTooltipText.data(),
-				exitTooltipText.size(), text);
-		}
-		else
-		{
-			const auto counts = exitCreatureCounts(worldUi);
-			quality::minimap::formatExitTooltip(exitTooltipText.data(),
-				exitTooltipText.size(), text, counts.first, counts.second);
-		}
+		const auto counts = exitCreatureCounts(worldUi);
+		quality::minimap::formatExitTooltip(exitTooltipText.data(),
+			exitTooltipText.size(), text, counts.first, counts.second);
 		return exitTooltipText.data();
 	}
 
@@ -1926,11 +1643,13 @@ namespace
 		const int hp = stats ? field<std::int32_t>(stats, layout::statHp) : 0;
 		const int allyIndex = monster
 			? skill(entity, skillMonsterAllyIndex) : -1;
-		const bool friendly = monster && allyIndex < 0 && stats && hp > 0
+		const bool alive = multiplayerMode() == layout::multiplayerClient
+			? monster : stats && hp > 0;
+		const bool friendly = monster && allyIndex < 0 && alive
 			&& monsterIsFriendlyForTooltip
 			&& monsterIsFriendlyForTooltip(viewer, entity);
 		return quality::minimap::classifyExitCreature(monster, allyIndex,
-			stats != nullptr, hp, friendly);
+			alive, friendly);
 	}
 
 	void updateGhostExitProximity(const int viewer, List* entities)
@@ -1989,9 +1708,7 @@ namespace
 	void updateFinalReveal(const int viewer)
 	{
 		if ( !validViewer(viewer) || !exitRevealActivated[viewer] ) { return; }
-		const auto counts = multiplayerMode() == layout::multiplayerClient
-			&& synchronizedExitCountsValid[viewer]
-			? synchronizedExitCounts[viewer] : exitCreatureCountsForViewer(viewer);
+		const auto counts = exitCreatureCountsForViewer(viewer);
 		finalRevealStates[viewer].activate();
 		finalRevealStates[viewer].update(counts.first, counts.second);
 		int hostiles = 0;
@@ -2009,7 +1726,7 @@ namespace
 	std::unordered_set<std::uint32_t> updateCreatureSightings(const int viewer,
 		List* entities, List* creatures)
 	{
-		std::vector<std::uint32_t> visible;
+		std::unordered_set<std::uint32_t> visible;
 		double originX = 0.0;
 		double originY = 0.0;
 		double yaw = 0.0;
@@ -2040,80 +1757,11 @@ namespace
 						targetX, targetY,
 						viewerEntity, entity, entities)) )
 				{
-					visible.push_back(uid(entity));
+					visible.insert(uid(entity));
 				}
 			}
 		}
-		auto& sequence = localSightingSequences[viewer];
-		if ( ++sequence == 0 ) { ++sequence; }
-		localSightings.replace(viewer, sequence, visible);
-		auto result = localSightings.combined();
-		result.insert(receivedPartySightings.begin(), receivedPartySightings.end());
-		return result;
-	}
-
-	void publishCreatureSightings()
-	{
-		const auto now = *reinterpret_cast<std::uint32_t*>(base + ticksRva);
-		if ( now - lastSightingPublishTick < 10U ) { return; }
-		lastSightingPublishTick = now;
-		if ( ++partySightingSequence == 0 ) { ++partySightingSequence; }
-		const auto combined = localSightings.combined();
-		if ( multiplayerMode() == layout::multiplayerClient )
-		{
-			if ( clientWelcomed && hostSightingCapable )
-			{
-				sendSightingSnapshot(0, localGeneration,
-					*reinterpret_cast<int*>(base + clientnumRva),
-					partySightingSequence, combined);
-			}
-			return;
-		}
-		if ( multiplayerMode() != 1 ) { return; }
-		const auto* disconnected = base + clientDisconnectedRva;
-		for ( int player = 1; player < 4; ++player )
-		{
-			if ( disconnected[player] ) { localSightings.clearPlayer(player); }
-			if ( !disconnected[player] && lastRemoteSightingTick[player]
-				&& now - lastRemoteSightingTick[player] > 50U )
-			{
-				localSightings.clearPlayer(player);
-				lastRemoteSightingTick[player] = 0;
-			}
-			if ( disconnected[player] ) { continue; }
-			const auto generation = clientGenerations[player];
-			if ( generation != 0
-				&& sightingCapableClients.count(player) != 0 )
-			{
-				sendSightingSnapshot(player, generation, 0xFF,
-					partySightingSequence, localSightings.combined());
-			}
-		}
-	}
-
-	void publishExitCountRefreshes()
-	{
-		if ( multiplayerMode() != 1 ) { return; }
-		const auto now = *reinterpret_cast<std::uint32_t*>(base + ticksRva);
-		const auto* disconnected = base + clientDisconnectedRva;
-		for ( int player = 1; player < 4; ++player )
-		{
-			if ( disconnected[player] ) { continue; }
-			const auto counts = exitCreatureCountsForViewer(player);
-			if ( publishedExitCountsValid[player]
-				&& publishedExitCounts[player] == counts
-				&& now - lastExitCountPublishTick[player] < 250U )
-			{
-				continue;
-			}
-			const auto generation = clientGenerations[player];
-			if ( generation == 0 ) { continue; }
-			publishedExitCounts[player] = counts;
-			publishedExitCountsValid[player] = true;
-			lastExitCountPublishTick[player] = now;
-			queueReliable(PacketKind::Counts, player, generation,
-				exitCountsPayload(player));
-		}
+		return visible;
 	}
 
 	void observeWorld()
@@ -2128,13 +1776,6 @@ namespace
 		}
 		const std::uint32_t ticks = *reinterpret_cast<std::uint32_t*>(base + ticksRva);
 		sendHello();
-		if ( multiplayerMode() == layout::multiplayerClient
-			&& lastPartySightingTick
-			&& ticks - lastPartySightingTick > 50U )
-		{
-			receivedPartySightings.clear();
-			lastPartySightingTick = 0;
-		}
 		if ( multiplayerMode() == 1 )
 		{
 			const auto* disconnected = base + clientDisconnectedRva;
@@ -2143,7 +1784,6 @@ namespace
 				if ( disconnected[player] )
 				{
 					clientGenerations[player] = 0;
-					sightingCapableClients.erase(player);
 				}
 			}
 		}
@@ -2196,9 +1836,8 @@ namespace
 		flushPendingPackets();
 		updateGhostExitProximity(currentViewer, entities);
 		updateFinalReveal(currentViewer);
-		const auto sharedSightings = updateCreatureSightings(currentViewer,
+		auto detectedCreatureUids = updateCreatureSightings(currentViewer,
 			entities, creatures);
-		auto detectedCreatureUids = sharedSightings;
 		if ( finalRevealStates[currentViewer].latched() )
 		{
 			for ( Node* node = creatures->first; node; node = node->next )
@@ -2213,9 +1852,6 @@ namespace
 				}
 			}
 		}
-		publishCreatureSightings();
-		publishExitCountRefreshes();
-
 		for ( Node* node = entities->first; node; node = node->next )
 		{
 			auto* entity = static_cast<std::uint8_t*>(node->element);
@@ -2698,26 +2334,9 @@ namespace
 			return;
 		}
 		std::array<char, 64> buffer {};
-		if ( multiplayerMode() == layout::multiplayerClient )
-		{
-			const int viewer = localPlayerSlot();
-			if ( !validViewer(viewer) || !synchronizedExitCountsValid[viewer] )
-			{
-				std::snprintf(buffer.data(), buffer.size(), "syncing...");
-			}
-			else
-			{
-				quality::minimap::formatCreatureCounts(buffer.data(), buffer.size(),
-					synchronizedExitCounts[viewer].first,
-					synchronizedExitCounts[viewer].second);
-			}
-		}
-		else
-		{
-			const auto counts = exitCreatureCountsForViewer(currentViewer);
-			quality::minimap::formatCreatureCounts(buffer.data(), buffer.size(),
-				counts.first, counts.second);
-		}
+		const auto counts = exitCreatureCountsForViewer(currentViewer);
+		quality::minimap::formatCreatureCounts(buffer.data(), buffer.size(),
+			counts.first, counts.second);
 
 		int virtualX = scope.viewport[2];
 		int virtualY = scope.viewport[3];

@@ -6,15 +6,13 @@ namespace quality::minimap::network
 {
 	constexpr std::uint8_t protocolVersion = 6;
 	constexpr std::uint8_t rosterProtocolVersion = 2;
-	constexpr std::uint8_t sightingProtocolVersion = 3;
 
-	enum class Stream : std::uint8_t { State, Roster, Sightings };
+	enum class Stream : std::uint8_t { State, Roster };
 
 	constexpr bool compatible(const Stream stream, const std::uint8_t version)
 	{
 		return stream == Stream::State ? version == protocolVersion
-			: stream == Stream::Roster ? version == rosterProtocolVersion
-			: version == sightingProtocolVersion;
+			: version == rosterProtocolVersion;
 	}
 
 	constexpr bool validPlayerSlot(const int player)

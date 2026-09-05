@@ -49,11 +49,11 @@ Write-Host 'Building QualityBarony.dll directly into distributable...'
     '-o' (Join-Path $Distribution 'QualityBarony.dll')
 if ($LASTEXITCODE -ne 0) { throw 'Quality runtime DLL build failed.' }
 
-Write-Host 'Building QualityBaronyLauncher.exe directly into distributable...'
+Write-Host 'Building QualityBarony.exe directly into distributable...'
 & $Compiler @Common '-DNDEBUG' '-municode' `
     (Join-Path $SourceRoot 'quality\launcher.cpp') `
     '-lbcrypt' '-ladvapi32' `
-    '-o' (Join-Path $Distribution 'QualityBaronyLauncher.exe')
+    '-o' (Join-Path $Distribution 'QualityBarony.exe')
 if ($LASTEXITCODE -ne 0) { throw 'Quality launcher build failed.' }
 
 Write-Host "Quality Barony runtime ready in $Distribution"

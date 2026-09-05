@@ -1,5 +1,5 @@
 - Compatible with Steam save game cloud sync, but don't use on runs that you started in vanilla Barony
-- No need to copy/move any files; just start `distributable\Launch Quality Barony.bat`.
+- No need to copy/move any files; just start `distributable\START HERE - Quality Barony.bat`.
 
 <details>
 <summary><strong>Install Options</strong></summary>

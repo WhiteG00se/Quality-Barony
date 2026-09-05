@@ -6,7 +6,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
-$Launcher = Join-Path $ProjectRoot 'distributable\QualityBaronyLauncher.exe'
+$Launcher = Join-Path $ProjectRoot 'distributable\QualityBarony.exe'
 $Runtime = Join-Path $ProjectRoot 'distributable\QualityBarony.dll'
 $GameExe = Join-Path $GameDir 'barony.exe'
 $ExpectedHash = '8566DA37BC39EA5A1ED08A8AD57608AF4F019FB415869258FB3C1D310B4419E4'

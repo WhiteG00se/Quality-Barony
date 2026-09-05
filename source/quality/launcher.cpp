@@ -592,7 +592,7 @@ namespace
 	void printUsage()
 	{
 		std::wcout << L"Quality Barony Launcher for Barony v5.0.2 x64\n\n"
-			L"Usage: QualityBaronyLauncher.exe [--game-dir PATH] "
+			L"Usage: QualityBarony.exe [--game-dir PATH] "
 			L"[--verify-only|--test-injection|--test-signature-rejection|"
 			L"--test-exp-credit-signature-rejection|"
 			L"--test-friendly-fire-signature-rejection|"
